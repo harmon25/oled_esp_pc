@@ -19,6 +19,19 @@ defmodule OledDisplay do
   @display_height 64
 
   def start() do
+    status_pid = spawn(fn -> status_loop(:initializing) end)
+    Process.register(status_pid, :wifi_status)
+
+    spawn(fn ->
+      send(:wifi_status, {:set, :connecting})
+      WifiWiz.start(ap: [
+        ssid: "AtomVM AP",
+        psk: "atomvm123",
+        ap_started: fn -> send(:wifi_status, {:set, :ap_mode}) end
+      ])
+      send(:wifi_status, {:set, :connected})
+    end)
+
     i2c = open_i2c()
     display = open_display(i2c)
 
@@ -50,6 +63,23 @@ defmodule OledDisplay do
     AVMPort.call(display, {:update, items})
   end
 
+  defp status_loop(state) do
+    receive do
+      {:set, new_state} -> status_loop(new_state)
+      {:get, from} ->
+        send(from, {:status, state})
+        status_loop(state)
+    after
+      60_000 -> status_loop(state)
+    end
+  end
+
+  defp wifi_status_label(:initializing), do: "WiFi: init"
+  defp wifi_status_label(:connecting), do: "WiFi: connecting..."
+  defp wifi_status_label(:ap_mode), do: "WiFi: AP Mode"
+  defp wifi_status_label(:connected), do: "WiFi: connected"
+  defp wifi_status_label(_), do: "WiFi: ?"
+
   defp show_splash(display) do
     items = [
       {:text, 16, 8, :default16px, 0xFFFFFF, 0x000000, "AtomVM"},
@@ -71,9 +101,18 @@ defmodule OledDisplay do
 
   defp count_loop(display, n) do
     text = Integer.to_string(n)
+
+    send(:wifi_status, {:get, self()})
+    wifi_text = receive do
+      {:status, s} -> wifi_status_label(s)
+    after
+      100 -> "WiFi: ?"
+    end
+
     items = [
-      {:text, 8, 16, :default16px, 0xFFFFFF, 0x000000, "Counter:"},
-      {:text, 24, 36, :default16px, 0x00FF00, 0x000000, text},
+      {:text, 8, 4, :default16px, 0xFFFFFF, 0x000000, "Counter:"},
+      {:text, 24, 24, :default16px, 0x00FF00, 0x000000, text},
+      {:text, 8, 48, :default16px, 0xAAAAAA, 0x000000, wifi_text},
       {:rect, 0, 0, @display_width, @display_height, 0x000000}
     ]
     update(display, items)

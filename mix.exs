@@ -24,7 +24,8 @@ defmodule OledDisplay.MixProject do
   defp deps do
     [
       {:exatomvm, github: "atomvm/ExAtomVM", runtime: false},
-      {:wifi_wiz, github: "harmon25/wifi_wiz", branch: "scan"}
+      {:wifi_wiz, github: "harmon25/wifi_wiz", branch: "scan"},
+      {:avm_scene, github: "atomvm/avm_scene"}
     ]
   end
 end

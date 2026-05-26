@@ -72,20 +72,51 @@ idf.py -p /dev/ttyACM0 monitor
 picocom /dev/ttyACM0 -b 115200
 ```
 
+## Layout Cycling (Demo Mode)
+
+The app cycles through 3 layouts with local-only demo data:
+
+| Data | Range | Cycle |
+|------|-------|-------|
+| Weather icon | sun, cloud_sun, cloud, rain1, rain2, rain_lightning, lightning, snow, wind, moon | every 3 s |
+| Temperature | 18–42°C | every 5 s |
+| Humidity | 40–95% | every 5 s |
+| Layout | Dashboard / Weather Focus / Compact Stack | every 8 s |
+
+All three layouts show icon+text pairs using 16×16 pixel icons.
+
 ## Project Structure
 
 ```
 oled_display/
 ├── .gitignore
 ├── README.md
-├── mix.exs                    # Mix project (ExAtomVM config)
+├── mix.exs                         # Mix project (ExAtomVM config)
 ├── lib/
-│   └── oled_display.ex        # Main app (exports start/0)
+│   ├── oled_display.ex             # App entrypoint (exports start/0)
+│   └── oled_display/
+│       ├── application_supervisor.ex  # OTP supervisor tree
+│       ├── display.ex              # GenServer: drives AtomGL, tick timer, layout dispatch
+│       ├── icon_data.ex            # Compile-time RGBA8888 icon bitmaps (14 icons)
+│       ├── layouts.ex              # 3 layout variants (A/B/C) as display lists
+│       └── wifi.ex                 # WiFi GenServer (WiFiWiz)
 ```
+
+## Adding a New Icon
+
+Weather icons are generated from embedded XBM source in `priv/gen_icons.py`:
+
+1. Add the 16×16 XBM byte array to `XBM_DATA` in `priv/gen_icons.py`
+2. Run `python3 priv/gen_icons.py` — writes `priv/icons/weather_<name>.rgba` and a preview PNG to `icon_previews/`
+3. Add `@<name> File.read!(Path.join(@icons_dir, "weather_<name>.rgba"))` in `icon_data.ex`
+4. Add a `get(:<name>)` clause returning `{:rgba8888, 16, 16, @<name>}`
+5. Use `{:image, x, y, 0x000000, IconData.get(:<name>)}` in layouts (black bg for hollow outlines)
+
+Utility icons (solid, not hollow): place a pre-built `.rgba` file in `priv/icons/utility_<name>.rgba`, follow steps 3–4 above, and use `:transparent` as the background colour in the display list.
 
 ## Iterating
 
-1. Edit `lib/oled_display.ex`
+1. Edit files in `lib/oled_display/`
 2. `mix atomvm.esp32.flash --port /dev/ttyACM0`
 3. The board resets automatically after flashing and runs the new app
 
@@ -97,4 +128,7 @@ All runtime dependencies are provided by the boot AVM partition pre-flashed on t
 - `Integer` — `Integer.to_string/1`
 - `atomgl` display port driver (built into the firmware)
 
-The custom `Elixir.OledDisplay.beam` is the only module in the main.avm partition.
+## Icon Credits
+
+- Weather icons from [Dhole/weather-pixel-icons](https://github.com/Dhole/weather-pixel-icons) — CC BY-SA 4.0
+- Utility icons (WiFi, temp, humidity, clock) from [osar/arduino-oled-icons](https://github.com/osar/arduino-oled-icons) — GPL v3 (original work by Artur Funk)

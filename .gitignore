@@ -1,0 +1,21 @@
+# Mix / Elixir
+_build/
+deps/
+*.ez
+
+# AtomVM
+*.avm
+
+# BEAM files
+*.beam
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Editor
+*.swp
+*.swo
+*~
+.idea/
+.vscode/

@@ -16,7 +16,7 @@ defmodule OledDisplay.Xbm do
 end
 
 defmodule OledDisplay.IconData do
-  @icons_dir Path.expand("../../priv/icons", __DIR__)
+  @icons_dir Path.expand("../../assets/icons", __DIR__)
 
   @sun     File.read!(Path.join(@icons_dir, "weather_sun.rgba"))
   @cloud   File.read!(Path.join(@icons_dir, "weather_cloud.rgba"))
@@ -29,6 +29,8 @@ defmodule OledDisplay.IconData do
   @rain2   File.read!(Path.join(@icons_dir, "weather_rain2.rgba"))
   @rain_lightning File.read!(Path.join(@icons_dir, "weather_rain_lightning.rgba"))
   @wifi1   File.read!(Path.join(@icons_dir, "utility_wifi1.rgba"))
+  @wifi_off File.read!(Path.join(@icons_dir, "utility_wifi_off.rgba"))
+  @up_arrow File.read!(Path.join(@icons_dir, "utility_up_arrow.rgba"))
   @temperature File.read!(Path.join(@icons_dir, "utility_temperature.rgba"))
   @humidity File.read!(Path.join(@icons_dir, "utility_humidity.rgba"))
   @clock   File.read!(Path.join(@icons_dir, "utility_clock.rgba"))
@@ -44,6 +46,8 @@ defmodule OledDisplay.IconData do
   def get(:rain2), do: {:rgba8888, 16, 16, @rain2}
   def get(:rain_lightning), do: {:rgba8888, 16, 16, @rain_lightning}
   def get(:wifi1), do: {:rgba8888, 16, 16, @wifi1}
+  def get(:wifi_off), do: {:rgba8888, 16, 16, @wifi_off}
+  def get(:up_arrow), do: {:rgba8888, 16, 16, @up_arrow}
   def get(:temperature), do: {:rgba8888, 16, 16, @temperature}
   def get(:humidity), do: {:rgba8888, 16, 16, @humidity}
   def get(:clock), do: {:rgba8888, 16, 16, @clock}

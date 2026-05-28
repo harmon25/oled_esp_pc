@@ -1,18 +1,8 @@
 defmodule OledDisplay.Display do
-  alias OledDisplay.IconData
-
   @i2c_sda 3
   @i2c_scl 4
   @display_width 128
   @display_height 64
-
-  # ── Demo data pools ──────────────────────────────────────────────
-
-  @weather_icons IconData.weather_icons()
-  @deg <<0xF8>>  # CP437 degree sign (font uses CP437, not Latin-1)
-  @temperatures ["18#{@deg}C", "22#{@deg}C", "26#{@deg}C", "30#{@deg}C", "34#{@deg}C", "38#{@deg}C", "42#{@deg}C"]
-  @humidities ["40%", "55%", "70%", "85%", "95%"]
-  @layouts [:a, :b, :c]
 
   # ── Lifecycle ────────────────────────────────────────────────────
 
@@ -38,73 +28,99 @@ defmodule OledDisplay.Display do
         invert: false
       )
 
-    AVMPort.call(display, {:update, splash_items()})
-    Process.sleep(1500)
+    # Push a static splash immediately so the screen isn't blank during startup
+    AVMPort.call(display, {:update, static_splash_items()})
 
-    :avm_scene.start_link(__MODULE__, opts, display_server: {:port, display})
+    :avm_scene.start_link(__MODULE__, opts ++ [display: display], display_server: {:port, display})
   end
 
-  def init(_opts) do
+  def init(opts) do
     :avm_pubsub.sub(:pubsub, :wifi_status, self())
+    :avm_pubsub.sub(:pubsub, :screen_request, self())
 
-    wifi_status = GenServer.call(OledDisplay.WiFi, :get_status)
+    # Start with Splash screen
+    {screen_state, tick_ms} = OledDisplay.Screens.Splash.init([])
 
-    schedule_tick()
+    schedule_tick(tick_ms)
 
-    {:ok, %{wifi_status: wifi_status, counter: 0}}
+    state = %{
+      screen: OledDisplay.Screens.Splash,
+      screen_state: screen_state,
+      tick_ms: tick_ms,
+      display: opts[:display]
+    }
+
+    {:ok, state}
   end
 
   # ── Event handlers ───────────────────────────────────────────────
 
-  def handle_info({:wifi_status, status}, state) do
-    new_state = %{state | wifi_status: status}
-    {:noreply, new_state, [{:push, display_items(new_state)}]}
-  end
-
   def handle_info(:tick, state) do
-    schedule_tick()
-    new_state = %{state | counter: state.counter + 1}
-    {:noreply, new_state, [{:push, display_items(new_state)}]}
+    # Reschedule next tick before processing
+    schedule_tick(state.tick_ms)
+
+    # Tick routing — forward to active screen
+    result = state.screen.handle_info(:tick, state.screen_state)
+    handle_screen_result(result, state)
   end
 
-  # ── Display list construction ────────────────────────────────────
-
-  defp display_items(state) do
-    weather_key = Enum.at(@weather_icons, div(state.counter, 3) |> rem(length(@weather_icons)))
-    temp_str = Enum.at(@temperatures, div(state.counter, 5) |> rem(length(@temperatures)))
-    humidity_str = Enum.at(@humidities, div(state.counter, 5) |> rem(length(@humidities)))
-    layout = Enum.at(@layouts, div(state.counter, 8) |> rem(length(@layouts)))
-    time_str = format_time(state.counter)
-    wifi = wifi_label(state.wifi_status)
-
-    OledDisplay.Layouts.build(layout, weather_key, temp_str, humidity_str, time_str, wifi)
+  def handle_info({:wifi_status, status}, state) do
+    result = state.screen.handle_info({:wifi_status, status}, state.screen_state)
+    handle_screen_result(result, state)
   end
 
-  # ── Helpers ──────────────────────────────────────────────────────
-
-  defp format_time(seconds) do
-    h = div(seconds, 3600) |> Kernel.rem(24)
-    m = div(seconds, 60) |> Kernel.rem(60)
-    s = rem(seconds, 60)
-    pad = fn n -> if n < 10, do: "0#{n}", else: Integer.to_string(n) end
-    "#{pad.(h)}:#{pad.(m)}:#{pad.(s)}"
+  def handle_info({:screen_request, {:switch, module, args}}, state) do
+    new_state = switch_screen(state, module, args)
+    items = module.render(new_state.screen_state)
+    {:noreply, new_state, [{:push, items}]}
   end
 
-  defp wifi_label(:initializing), do: "init.."
-  defp wifi_label(:connecting), do: "connecting"
-  defp wifi_label(:ap_mode), do: "AP Mode"
-  defp wifi_label(:connected), do: "connected"
-  defp wifi_label(_), do: "?"
-
-  defp schedule_tick do
-    Process.send_after(self(), :tick, 1000)
+  def handle_info(msg, state) do
+    # Any other pubsub / system messages get routed to the screen
+    result = state.screen.handle_info(msg, state.screen_state)
+    handle_screen_result(result, state)
   end
 
-  defp splash_items do
+  # ── Screen result handling ───────────────────────────────────────
+
+  defp handle_screen_result({:noreply, new_screen_state}, state) do
+    {:noreply, %{state | screen_state: new_screen_state}}
+  end
+
+  defp handle_screen_result({:noreply, new_screen_state, [{:push, items}]}, state) do
+    {:noreply, %{state | screen_state: new_screen_state}, [{:push, items}]}
+  end
+
+  defp handle_screen_result({:switch, module, args}, state) do
+    new_state = switch_screen(state, module, args)
+    items = module.render(new_state.screen_state)
+    {:noreply, new_state, [{:push, items}]}
+  end
+
+  # ── Screen switching ───────────────────────────────────────────
+
+  defp switch_screen(state, module, args) do
+    {screen_state, tick_ms} = module.init(args)
+
+    # Schedule tick for new screen
+    schedule_tick(tick_ms)
+
+    %{state | screen: module, screen_state: screen_state, tick_ms: tick_ms}
+  end
+
+  defp schedule_tick(tick_ms) when tick_ms > 0 do
+    Process.send_after(self(), :tick, tick_ms)
+  end
+
+  defp schedule_tick(_tick_ms) do
+    :ok
+  end
+
+  defp static_splash_items do
     [
-      {:text, 16, 8, :default16px, 0xFFFFFF, 0x000000, "AtomVM"},
-      {:text, 8, 32, :default16px, 0xFFFFFF, 0x000000, "ESP32-C3"},
-      {:text, 8, 48, :default16px, 0xAAAAAA, 0x000000, "Elixir + JIT"},
+      {:text, 24, 8, :default16px, 0xFFFFFF, 0x000000, "AtomVM"},
+      {:text, 16, 24, :default16px, 0xFFFFFF, 0x000000, "ESP32-C3"},
+      {:text, 12, 40, :default16px, 0xAAAAAA, 0x000000, "Elixir + JIT"},
       {:rect, 0, 0, @display_width, @display_height, 0x000000}
     ]
   end

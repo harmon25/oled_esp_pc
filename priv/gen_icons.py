@@ -3,9 +3,8 @@
 priv/gen_icons.py — Regenerate weather icon .rgba binaries from Dhole XBM source.
 
 Converts 16x16 XBM (X11 format, LSB-first bit order) to RGBA8888 raw binaries.
-Writes weather .rgba files to priv/icons/ and preview PNGs (8x scaled, black
-background) for all icons (weather + utility) to icon_previews/ (project root,
-outside priv/ so they are not packed into the firmware).
+Writes weather .rgba files to assets/icons/ and preview PNGs (8x scaled, black
+background) for all icons (weather + utility) to icon_previews/ (project root).
 """
 
 import os
@@ -160,11 +159,66 @@ def write_utility_previews(icons_dir: Path, preview_dir: Path):
         write_preview(name, grid, preview_dir)
 
 
+def generate_up_arrow_icon(icons_dir: Path, preview_dir: Path):
+    """Create a slim, centered, shorter upward-pointing arrow icon."""
+    grid = []
+    for y in range(16):
+        row = [False] * 16
+        if y == 2:
+            # Tip: 2px wide, centered at 7.5
+            row[7] = row[8] = True
+        elif y == 3:
+            # 4px wide
+            for x in range(6, 10):
+                row[x] = True
+        elif y == 4:
+            # 6px wide
+            for x in range(5, 11):
+                row[x] = True
+        elif y >= 5 and y <= 10:
+            # Stem: 2px wide (6 rows), centered at 7.5
+            row[7] = row[8] = True
+        # y = 0,1 (top padding) and y = 11..15 (bottom padding) stay empty
+        grid.append(row)
+
+    off_path = icons_dir / "utility_up_arrow.rgba"
+    off_path.write_bytes(grid_to_rgba(grid))
+    print(f"  wrote {off_path} ({len(grid) * len(grid[0]) * 4} bytes)")
+    write_preview("utility_up_arrow", grid, preview_dir)
+
+
+def generate_wifi_off_icon(icons_dir: Path, preview_dir: Path):
+    """Create a wifi-off icon by overlaying a diagonal slash on wifi1."""
+    wifi1_path = icons_dir / "utility_wifi1.rgba"
+    if not wifi1_path.exists():
+        print("  skipping utility_wifi_off (utility_wifi1.rgba not found)")
+        return
+
+    grid = rgba_to_grid(wifi1_path.read_bytes())
+    h = len(grid)
+    w = len(grid[0])
+
+    # Overlay a diagonal slash (top-left to bottom-right, 2px thick)
+    for y in range(h):
+        for x in range(w):
+            # Main diagonal
+            if abs((y - x)) <= 1:
+                grid[y][x] = True
+            # Secondary diagonal for thickness at edges
+            if abs((y - (w - 1 - x))) <= 1:
+                grid[y][x] = True
+
+    off_path = icons_dir / "utility_wifi_off.rgba"
+    off_path.write_bytes(grid_to_rgba(grid))
+    print(f"  wrote {off_path} ({len(grid) * len(grid[0]) * 4} bytes)")
+    write_preview("utility_wifi_off", grid, preview_dir)
+
+
 def main():
     script_dir = Path(__file__).parent.resolve()
-    icons_dir = script_dir / "icons"
+    icons_dir = script_dir.parent / "assets" / "icons"
     preview_dir = script_dir.parent / "icon_previews"
-    icons_dir.mkdir(exist_ok=True)
+    icons_dir.mkdir(parents=True, exist_ok=True)
     preview_dir.mkdir(exist_ok=True)
 
     print(f"Generating weather icons in {icons_dir}")
@@ -176,6 +230,12 @@ def main():
 
     print(f"\nGenerating utility icon previews from existing .rgba files")
     write_utility_previews(icons_dir, preview_dir)
+
+    print(f"\nGenerating utility_wifi_off icon")
+    generate_wifi_off_icon(icons_dir, preview_dir)
+
+    print(f"\nGenerating utility_up_arrow icon")
+    generate_up_arrow_icon(icons_dir, preview_dir)
 
     print(f"\nDone. {len(XBM_DATA)} weather icons regenerated, utility previews written.")
 

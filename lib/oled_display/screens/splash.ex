@@ -50,9 +50,7 @@ defmodule OledDisplay.Screens.Splash do
 
   defp text_items do
     [
-      {:text, 8, 26, :default16px, @fg, :transparent, "AtomVM / ESP32"},
-      {:text, 40, 44, :default16px, @fg, :transparent, "Elixir"}
-    ]
+      {:text, 4, 16, :default16px, @fg, :transparent, "AtomVM | Elixir"}    ]
   end
 
   defp loading_bar(state) do

@@ -1,8 +1,14 @@
 defmodule OledDisplay.Display do
+  @compile {:no_warn_undefined, [I2C, AVMPort, :avm_pubsub]}
+
   @i2c_sda 3
   @i2c_scl 4
   @display_width 128
   @display_height 64
+  @screens [OledDisplay.Screens.SystemStats, OledDisplay.Screens.Weather]
+
+  @fonts_dir Path.join(__DIR__, "../../assets/fonts") |> Path.expand()
+  @font_mono12 File.read!(Path.join(@fonts_dir, "liberation_mono_12px.uff"))
 
   # ── Lifecycle ────────────────────────────────────────────────────
 
@@ -31,12 +37,16 @@ defmodule OledDisplay.Display do
     # Push a static splash immediately so the screen isn't blank during startup
     AVMPort.call(display, {:update, static_splash_items()})
 
+    # Register custom fonts
+    AVMPort.call(display, {:register_font, :mono12, @font_mono12})
+
     :avm_scene.start_link(__MODULE__, opts ++ [display: display], display_server: {:port, display})
   end
 
   def init(opts) do
     :avm_pubsub.sub(:pubsub, :wifi_status, self())
     :avm_pubsub.sub(:pubsub, :screen_request, self())
+    :avm_pubsub.sub(:pubsub, :next_screen, self())
 
     # Start with Splash screen
     {screen_state, tick_ms} = OledDisplay.Screens.Splash.init([])
@@ -73,6 +83,12 @@ defmodule OledDisplay.Display do
     new_state = switch_screen(state, module, args)
     items = module.render(new_state.screen_state)
     {:noreply, new_state, [{:push, items}]}
+  end
+
+  def handle_info(:boot_button_pressed, state) do
+    next = cycle_screen(state.screen)
+    result = {:switch, next, []}
+    handle_screen_result(result, state)
   end
 
   def handle_info(msg, state) do
@@ -114,6 +130,13 @@ defmodule OledDisplay.Display do
 
   defp schedule_tick(_tick_ms) do
     :ok
+  end
+
+  defp cycle_screen(current) do
+    case Enum.find_index(@screens, &(&1 == current)) do
+      nil -> hd(@screens)
+      idx -> Enum.at(@screens, rem(idx + 1, length(@screens)))
+    end
   end
 
   defp static_splash_items do

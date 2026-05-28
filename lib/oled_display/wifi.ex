@@ -1,39 +1,83 @@
 defmodule OledDisplay.WiFi do
+  @compile {:no_warn_undefined, [:avm_pubsub, :esp]}
+
   use GenServer
 
   def start_link(opts) do
     GenServer.start_link(__MODULE__, opts, name: __MODULE__)
   end
 
-  def init(_opts) do
-    :avm_pubsub.pub(:pubsub, :wifi_status, :initializing)
+  # Returns {connected :: boolean, ip :: tuple | nil}
+  def status() do
+    GenServer.call(__MODULE__, :status)
+  end
 
-    wifi_pid = self()
+  def init(_opts) do
+    IO.puts("WiFi: initializing")
+    self_pid = self()
+    :avm_pubsub.pub(:pubsub, :wifi_status, :connecting)
+    :avm_pubsub.sub(:pubsub, :clear_wifi_creds, self())
 
     spawn_link(fn ->
-      :avm_pubsub.pub(:pubsub, :wifi_status, :connecting)
-      send(wifi_pid, {:wifi_event, :connecting})
+      result =
+        WifiWiz.start(
+          ap: [
+            ssid: "AtomVM AP",
+            psk: "atomvm123"
+          ],
+          sta_retry: [
+            on_exhausted: :return_error
+          ]
+        )
 
-      WifiWiz.start(
-        ap: [
-          ssid: "AtomVM AP",
-          psk: "atomvm123",
-          ap_started: fn -> send(wifi_pid, {:wifi_event, :ap_mode}) end
-        ]
-      )
+      case result do
+        {:ok, {ip, _, _}} ->
+          :io.format("WiFi: connected ~p~n", [ip])
+          send(self_pid, {:wifi_status, {:connected, ip}})
+          :avm_pubsub.pub(:pubsub, :wifi_status, :connected)
 
-      send(wifi_pid, {:wifi_event, :connected})
+        {:error, :sta_exhausted} ->
+          IO.puts("WiFi: STA exhausted, starting AP mode")
+          send(self_pid, {:wifi_status, :ap_mode})
+          :avm_pubsub.pub(:pubsub, :wifi_status, :ap_mode)
+
+          config =
+            WifiWiz.Ap.create_ap_config("AtomVM AP", "atomvm123",
+              ap_started: fn -> :ok end
+            )
+
+          WifiWiz.Ap.start_ap(config)
+
+        other ->
+          :io.format("WiFi: unexpected result ~p~n", [other])
+      end
     end)
 
-    {:ok, %{status: :initializing}}
+    {:ok, %{connected: false, ip: nil}}
   end
 
-  def handle_call(:get_status, _from, state) do
-    {:reply, state.status, state}
+  def handle_info({:wifi_status, {:connected, ip}}, state) do
+    :io.format("WiFi: state -> connected, ip=~p~n", [ip])
+    {:noreply, %{state | connected: true, ip: ip}}
   end
 
-  def handle_info({:wifi_event, status}, state) do
-    :avm_pubsub.pub(:pubsub, :wifi_status, status)
-    {:noreply, %{state | status: status}}
+  def handle_info({:wifi_status, status}, state) do
+    :io.format("WiFi: state -> ~p~n", [status])
+    {:noreply, %{state | connected: false, ip: nil}}
+  end
+
+  def handle_call(:status, _from, state) do
+    {:reply, {state.connected, state.ip}, state}
+  end
+
+  def handle_info({:clear_wifi_creds, :boot_button_held}, _state) do
+    IO.puts("WiFi: wiping credentials")
+    WifiWiz.Config.reset()
+    Process.sleep(500)
+    :esp.restart()
+  end
+
+  def handle_info(_msg, state) do
+    {:noreply, state}
   end
 end

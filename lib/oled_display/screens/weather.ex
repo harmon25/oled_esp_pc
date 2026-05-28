@@ -1,4 +1,6 @@
 defmodule OledDisplay.Screens.Weather do
+  @compile {:no_warn_undefined, [:avm_pubsub]}
+
   @moduledoc """
   Skeleton / spec for a weather screen.
 

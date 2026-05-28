@@ -1,4 +1,6 @@
 defmodule OledDisplay.ApplicationSupervisor do
+  @compile {:no_warn_undefined, [:avm_pubsub]}
+
   use Supervisor
 
   def start_link(opts \\ []) do
@@ -9,8 +11,9 @@ defmodule OledDisplay.ApplicationSupervisor do
     :avm_pubsub.start(:pubsub)
 
     children = [
+      {OledDisplay.Display, []},
       {OledDisplay.WiFi, []},
-      {OledDisplay.Display, []}
+      {OledDisplay.Button, []}
     ]
 
     Supervisor.init(children, strategy: :one_for_one)

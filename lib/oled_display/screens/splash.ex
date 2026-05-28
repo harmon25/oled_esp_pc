@@ -14,7 +14,6 @@ defmodule OledDisplay.Screens.Splash do
 
   @bg 0x000000
   @fg 0xFFFFFF
-  @dim 0xAAAAAA
   @track 0x333333
 
   # ── Screen behaviour ───────────────────────────────────────────
@@ -22,12 +21,7 @@ defmodule OledDisplay.Screens.Splash do
   @impl true
   def init(_args) do
     duration_ticks = div(@splash_duration_ms, @tick_ms)
-    state = %{
-      tick_count: 0,
-      duration_ticks: duration_ticks,
-      tick_ms: @tick_ms
-    }
-
+    state = %{tick_count: 0, duration_ticks: duration_ticks, tick_ms: @tick_ms}
     {state, @tick_ms}
   end
 
@@ -55,8 +49,6 @@ defmodule OledDisplay.Screens.Splash do
   # ── Private ──────────────────────────────────────────────────────
 
   defp text_items do
-    # 14 chars × 8px = 112px wide → x=8 for centered look
-    # 6 chars × 8px = 48px wide → x=40 for centered look
     [
       {:text, 8, 26, :default16px, @fg, :transparent, "AtomVM / ESP32"},
       {:text, 40, 44, :default16px, @fg, :transparent, "Elixir"}
@@ -64,10 +56,8 @@ defmodule OledDisplay.Screens.Splash do
   end
 
   defp loading_bar(state) do
-    # Track background
     track = {:rect, 14, 58, 100, 3, @track}
 
-    # Fill width grows proportionally
     max_w = 100
     fill_w = div(state.tick_count * max_w, state.duration_ticks)
     fill_w = min(fill_w, max_w)

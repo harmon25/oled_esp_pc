@@ -117,11 +117,6 @@ defmodule OledDisplay.Display do
   end
 
   defp static_splash_items do
-    [
-      {:text, 24, 8, :default16px, 0xFFFFFF, 0x000000, "AtomVM"},
-      {:text, 16, 24, :default16px, 0xFFFFFF, 0x000000, "ESP32-C3"},
-      {:text, 12, 40, :default16px, 0xAAAAAA, 0x000000, "Elixir + JIT"},
-      {:rect, 0, 0, @display_width, @display_height, 0x000000}
-    ]
+    [{:rect, 0, 0, @display_width, @display_height, 0x000000}]
   end
 end

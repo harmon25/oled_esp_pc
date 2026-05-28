@@ -13,6 +13,7 @@ defmodule OledDisplay do
   """
 
   def start() do
+   
     OledDisplay.ApplicationSupervisor.start_link()
     Process.sleep(:infinity)
   end

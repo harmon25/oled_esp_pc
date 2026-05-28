@@ -53,24 +53,29 @@ The `OledDisplay.Xbm.to_rgba/3` converter expands XBM bit-packed data (X11 forma
 
 ## Font system
 
-Custom fonts are stored as `.uff` binaries in `assets/fonts/` and embedded at compile time in `display.ex`. The `:default16px` built-in (8×16 CP437) is always available; additional fonts must be registered before use.
+Custom fonts are stored as `.uff` binaries in `assets/fonts/` and auto-registered at compile time via `OledDisplay.Fonts`. The `:default16px` built-in (8×16 CP437) is always available; additional fonts must be registered before use.
 
-**Registering a font:**
-```elixir
-# In display.ex start_link, before :avm_scene.start_link
-@font_mono12 File.read!("assets/fonts/liberation_mono_12px.uff")
-AVMPort.call(display, {:register_font, :mono12, @font_mono12})
-```
+**Registered fonts:**
 
-Then use the atom (`:mono12`) as the font argument in `{:text, x, y, :mono12, fg, bg, text}` items.
+| Atom | File | Source | Size | Best for |
+|---|---|---|---|---|
+| `:spleen5x8` | `spleen_5x8.uff` | Spleen (BSD-2) | 5×8 | Dense rows, up to 16×8 chars |
+| `:cozette` | `cozette_6x13.uff` | Cozette (MIT) | 6×13 | Body text, 21×4 chars |
+| `:pixop16` | `pixel_operator_16.uff` | Pixel Operator (CC0) | 8×16 | Headlines / large numbers |
 
-**Generating a new font:** `tools/gen_font.py` converts any TTF/OTF to the ufontlib IFF (`.uff`) format using freetype-py. Targets printable ASCII (0x20–0x7E), uncompressed, 4bpp nibble layout.
+All three are rendered with **hinted monochrome bitmaps** (`FT_LOAD_TARGET_MONO`) so thin strokes (e.g. `m`, `w`) stay crisp on a 1-bit OLED. No anti-aliased grayscale path is used.
+
+**Auto-registration:**
+`lib/oled_display/fonts.ex` scans `assets/fonts/*.uff` at compile time and returns a `[{atom, binary}, ...]` list from `OledDisplay.Fonts.all/0`. `display.ex` loops over this list and calls `{:register_font, atom, binary}` for each entry. Each `.uff` is declared as `@external_resource` so Mix recompiles when fonts change.
+
+**Generating a new font:** `tools/gen_font.py` converts TTF/OTF/BDF/PCF to the ufontlib IFF (`.uff`) format using freetype-py. Targets printable ASCII (0x20–0x7E), uncompressed, 4bpp nibble layout.
 
 ```bash
-python3 tools/gen_font.py <font.ttf> <pixel_size> assets/fonts/<name>.uff
+python3 tools/gen_font.py <font_path> <size_px> assets/fonts/<name>.uff
 ```
 
-Tip: use different `pixel_size` values to hit a desired `advance_y` (line height). Liberation Mono at size=10 gives advance_y=12.
+- For BDF/PCF bitmap fonts the `size_px` argument is ignored (the strike is fixed).
+- For TTF/OTF, the script uses `FT_LOAD_RENDER | FT_LOAD_MONOCHROME | FT_LOAD_TARGET_MONO` to emit crisp 1-bit glyphs. Sizes below ~12 px with the old anti-aliased path lost thin strokes; the mono path fixes this.
 
 **Note:** `tools/` scripts are host-only. Never put them in `priv/` — that directory is bundled into the `.avm`.
 

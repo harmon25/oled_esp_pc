@@ -65,11 +65,11 @@ mix atomvm.esp32.flash --port /dev/ttyACM0 --baud 460800
 ## View Serial Output
 
 ```bash
-# Requires a TTY (run in a real terminal):
+# Requires a TTY (run in a real terminal):s
 idf.py -p /dev/ttyACM0 monitor
 
-# Or using picocom:
-picocom /dev/ttyACM0 -b 115200
+# Or using minicom:
+minicom -D /dev/ttyACM0 -b 115200
 ```
 
 ## Layout Cycling (Demo Mode)

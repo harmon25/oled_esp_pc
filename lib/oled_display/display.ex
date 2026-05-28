@@ -7,9 +7,6 @@ defmodule OledDisplay.Display do
   @display_height 64
   @screens [OledDisplay.Screens.SystemStats, OledDisplay.Screens.Weather]
 
-  @fonts_dir Path.join(__DIR__, "../../assets/fonts") |> Path.expand()
-  @font_mono12 File.read!(Path.join(@fonts_dir, "liberation_mono_12px.uff"))
-
   # ── Lifecycle ────────────────────────────────────────────────────
 
   def child_spec(opts) do
@@ -37,26 +34,28 @@ defmodule OledDisplay.Display do
     # Push a static splash immediately so the screen isn't blank during startup
     AVMPort.call(display, {:update, static_splash_items()})
 
-    # Register custom fonts
-    AVMPort.call(display, {:register_font, :mono12, @font_mono12})
+    # Register all custom fonts found in assets/fonts/
+    Enum.each(OledDisplay.Fonts.all(), fn {name, bin} ->
+      AVMPort.call(display, {:register_font, name, bin})
+    end)
 
     :avm_scene.start_link(__MODULE__, opts ++ [display: display], display_server: {:port, display})
   end
 
   def init(opts) do
-    :avm_pubsub.sub(:pubsub, :wifi_status, self())
-    :avm_pubsub.sub(:pubsub, :screen_request, self())
-    :avm_pubsub.sub(:pubsub, :next_screen, self())
+    :avm_pubsub.sub(:pubsub, [:wifi_status], self())
+    :avm_pubsub.sub(:pubsub, [:screen_request], self())
+    :avm_pubsub.sub(:pubsub, [:next_screen], self())
 
     # Start with Splash screen
     {screen_state, tick_ms} = OledDisplay.Screens.Splash.init([])
-
-    schedule_tick(tick_ms)
+    tick_ref = schedule_tick(tick_ms)
 
     state = %{
       screen: OledDisplay.Screens.Splash,
       screen_state: screen_state,
       tick_ms: tick_ms,
+      tick_ref: tick_ref,
       display: opts[:display]
     }
 
@@ -65,39 +64,46 @@ defmodule OledDisplay.Display do
 
   # ── Event handlers ───────────────────────────────────────────────
 
+  # Tick handler: the ONLY place that reschedules the next tick (besides
+  # switch_screen which sets up the first tick for a new screen).
+  # Handling it separately prevents non-tick messages from piling up extra timers.
   def handle_info(:tick, state) do
-    # Reschedule next tick before processing
-    schedule_tick(state.tick_ms)
-
-    # Tick routing — forward to active screen
     result = state.screen.handle_info(:tick, state.screen_state)
-    handle_screen_result(result, state)
+
+    case result do
+      {:switch, module, args} ->
+        do_switch(state, module, args)
+
+      {:noreply, new_screen_state} ->
+        tick_ref = schedule_tick(state.tick_ms)
+        {:noreply, %{state | screen_state: new_screen_state, tick_ref: tick_ref}}
+
+      {:noreply, new_screen_state, [{:push, items}]} ->
+        tick_ref = schedule_tick(state.tick_ms)
+        {:noreply, %{state | screen_state: new_screen_state, tick_ref: tick_ref}, [{:push, items}]}
+    end
   end
 
-  def handle_info({:wifi_status, status}, state) do
+  def handle_info({:pub, [:wifi_status], _from, status}, state) do
     result = state.screen.handle_info({:wifi_status, status}, state.screen_state)
     handle_screen_result(result, state)
   end
 
-  def handle_info({:screen_request, {:switch, module, args}}, state) do
-    new_state = switch_screen(state, module, args)
-    items = module.render(new_state.screen_state)
-    {:noreply, new_state, [{:push, items}]}
+  def handle_info({:pub, [:screen_request], _from, {:switch, module, args}}, state) do
+    do_switch(state, module, args)
   end
 
-  def handle_info(:boot_button_pressed, state) do
+  def handle_info({:pub, [:next_screen], _from, :boot_button_pressed}, state) do
     next = cycle_screen(state.screen)
-    result = {:switch, next, []}
-    handle_screen_result(result, state)
+    do_switch(state, next, [])
   end
 
   def handle_info(msg, state) do
-    # Any other pubsub / system messages get routed to the screen
     result = state.screen.handle_info(msg, state.screen_state)
     handle_screen_result(result, state)
   end
 
-  # ── Screen result handling ───────────────────────────────────────
+  # ── Screen result helpers (non-tick messages — no tick rescheduling) ──
 
   defp handle_screen_result({:noreply, new_screen_state}, state) do
     {:noreply, %{state | screen_state: new_screen_state}}
@@ -108,28 +114,39 @@ defmodule OledDisplay.Display do
   end
 
   defp handle_screen_result({:switch, module, args}, state) do
+    do_switch(state, module, args)
+  end
+
+  # ── Screen switching ───────────────────────────────────────────
+
+  # Central switch entry point: cancel the outgoing screen's timer, init the
+  # new screen, schedule its first tick, render an immediate first frame.
+  defp do_switch(state, module, args) do
     new_state = switch_screen(state, module, args)
     items = module.render(new_state.screen_state)
     {:noreply, new_state, [{:push, items}]}
   end
 
-  # ── Screen switching ───────────────────────────────────────────
-
   defp switch_screen(state, module, args) do
+    # Cancel any pending tick from the outgoing screen. If the timer already
+    # fired, cancel_timer returns false — harmless.
+    cancel_tick(state[:tick_ref])
+
     {screen_state, tick_ms} = module.init(args)
+    tick_ref = schedule_tick(tick_ms)
 
-    # Schedule tick for new screen
-    schedule_tick(tick_ms)
-
-    %{state | screen: module, screen_state: screen_state, tick_ms: tick_ms}
+    %{state | screen: module, screen_state: screen_state, tick_ms: tick_ms, tick_ref: tick_ref}
   end
+
+  defp cancel_tick(nil), do: :ok
+  defp cancel_tick(ref), do: Process.cancel_timer(ref)
 
   defp schedule_tick(tick_ms) when tick_ms > 0 do
     Process.send_after(self(), :tick, tick_ms)
   end
 
   defp schedule_tick(_tick_ms) do
-    :ok
+    nil
   end
 
   defp cycle_screen(current) do

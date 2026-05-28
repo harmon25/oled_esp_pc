@@ -1,6 +1,6 @@
 defmodule OledDisplay.Screens.SystemStats do
   @moduledoc """
-  System statistics screen (mono12 font, 12px line height).
+  System statistics screen (cozette font, 13px line height).
 
   y=0  [wifi][up_arrow]              00:00:00   16px icons, uptime right-aligned
   y=18 128k free  45k min                       free + min heap
@@ -15,8 +15,8 @@ defmodule OledDisplay.Screens.SystemStats do
   @bg 0x000000
   @fg 0xFFFFFF
 
-  @font :mono12
-  # Liberation Mono at size=10 → advance_x=6px per char
+  @font :cozette
+  # Cozette 6×13 → advance_x=6px per char
   @char_w 6
 
   @tick_ms 1000

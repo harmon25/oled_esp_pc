@@ -39,7 +39,7 @@ defmodule OledDisplay.Button do
     end
 
     IO.puts("Button short press")
-    :avm_pubsub.pub(:pubsub, :next_screen, :boot_button_pressed)
+    :avm_pubsub.pub(:pubsub, [:next_screen], :boot_button_pressed)
     {:noreply, %{state | state: :idle, timer_ref: nil}}
   end
 
@@ -66,7 +66,7 @@ defmodule OledDisplay.Button do
     case :gpio.digital_read(@gpio_pin) do
       :low ->
         IO.puts("Button long press")
-        :avm_pubsub.pub(:pubsub, :clear_wifi_creds, :boot_button_held)
+        :avm_pubsub.pub(:pubsub, [:clear_wifi_creds], :boot_button_held)
         {:noreply, %{state | state: :long_press_done, timer_ref: nil}}
 
       :high ->

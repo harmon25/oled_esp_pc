@@ -15,8 +15,8 @@ defmodule OledDisplay.WiFi do
   def init(_opts) do
     IO.puts("WiFi: initializing")
     self_pid = self()
-    :avm_pubsub.pub(:pubsub, :wifi_status, :connecting)
-    :avm_pubsub.sub(:pubsub, :clear_wifi_creds, self())
+    :avm_pubsub.pub(:pubsub, [:wifi_status], :connecting)
+    :avm_pubsub.sub(:pubsub, [:clear_wifi_creds], self())
 
     spawn_link(fn ->
       result =
@@ -24,8 +24,13 @@ defmodule OledDisplay.WiFi do
           ap: [
             ssid: "AtomVM AP",
             psk: "atomvm123"
+            # ap_started: fn -> 
+            #   IO.puts("Setting TX power to low for AP mode")
+            #  :network.set_tx_power(:low)
+            # end
           ],
           sta_retry: [
+            max_duration_ms: 30_000,
             on_exhausted: :return_error
           ]
         )
@@ -34,12 +39,12 @@ defmodule OledDisplay.WiFi do
         {:ok, {ip, _, _}} ->
           :io.format("WiFi: connected ~p~n", [ip])
           send(self_pid, {:wifi_status, {:connected, ip}})
-          :avm_pubsub.pub(:pubsub, :wifi_status, :connected)
+          :avm_pubsub.pub(:pubsub, [:wifi_status], :connected)
 
         {:error, :sta_exhausted} ->
           IO.puts("WiFi: STA exhausted, starting AP mode")
           send(self_pid, {:wifi_status, :ap_mode})
-          :avm_pubsub.pub(:pubsub, :wifi_status, :ap_mode)
+          :avm_pubsub.pub(:pubsub, [:wifi_status], :ap_mode)
 
           config =
             WifiWiz.Ap.create_ap_config("AtomVM AP", "atomvm123",
@@ -66,18 +71,19 @@ defmodule OledDisplay.WiFi do
     {:noreply, %{state | connected: false, ip: nil}}
   end
 
-  def handle_call(:status, _from, state) do
-    {:reply, {state.connected, state.ip}, state}
-  end
-
-  def handle_info({:clear_wifi_creds, :boot_button_held}, _state) do
+  def handle_info({:pub, [:clear_wifi_creds], _from, :boot_button_held}, state) do
     IO.puts("WiFi: wiping credentials")
     WifiWiz.Config.reset()
     Process.sleep(500)
     :esp.restart()
+    {:noreply, state}
   end
 
   def handle_info(_msg, state) do
     {:noreply, state}
+  end
+
+  def handle_call(:status, _from, state) do
+    {:reply, {state.connected, state.ip}, state}
   end
 end

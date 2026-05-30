@@ -27,11 +27,22 @@ defmodule OledDisplay.Screen do
 
   Return values:
   - `{:noreply, state}` — state updated, no display push
-  - `{:noreply, state, [{:push, items}]}` — push new display list
+  - `{:noreply, state, opts}` — state updated with options list
   - `{:switch, module, args}` — request Display to switch to another screen
+
+  Options list may contain:
+  - `{:push, items}` — push new display list to avm_scene
+  - `{:tick_ms, ms}` — override tick interval for the next tick (e.g. for animations)
   """
   @callback handle_info(msg :: term(), state :: term()) ::
               {:noreply, state :: term()}
-              | {:noreply, state :: term(), [{:push, items :: list()}]}
+              | {:noreply, state :: term(), opts :: list()}
               | {:switch, module :: atom(), args :: term()}
+
+  @doc """
+  Returns true if this screen can be shown in the current runtime
+  conditions. Display skips unavailable screens during auto-rotation
+  and manual cycling.
+  """
+  @callback available?(args :: term()) :: boolean()
 end

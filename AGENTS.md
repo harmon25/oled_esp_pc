@@ -15,11 +15,11 @@ Multi-module AtomVM app for SSD1306 OLED on ESP32-C3. No tests, no CI.
 ## Module layout
 
 - `lib/oled_display.ex` — app entrypoint (exports `start/0`)
-- `lib/oled_display/screen.ex` — behaviour definition for display screens (`init/1`, `render/1`, `handle_info/2`)
-- `lib/oled_display/display.ex` — GenServer driving AtomGL via `avm_scene`; routes ticks and pubsub messages to the active screen, handles screen switching
-- `lib/oled_display/screens/splash.ex` — boot splash with animated loading bar; auto-transitions to SystemStats after 2 s
-- `lib/oled_display/screens/system_stats.ex` — shows WiFi status (disconnected for now), uptime, heap, and process count
-- `lib/oled_display/screens/weather.ex` — skeleton/spec for a network-connected weather screen (not yet active)
+- `lib/oled_display/screen.ex` — behaviour definition for display screens (`init/1`, `render/1`, `handle_info/2`, `available?/1`)
+- `lib/oled_display/display.ex` — GenServer driving AtomGL via `avm_scene`; owns the hardware port, manages a `:boot` phase, then routes ticks and pubsub to the active screen; handles screen switching and auto-rotation
+- `lib/oled_display/screens/splash.ex` — **pure boot-phase renderer** (not a Screen). Driven by `Display` during boot to show app name, real WiFi status, and an animated progress bar
+- `lib/oled_display/screens/system_stats.ex` — shows WiFi status / AP name / IP, uptime, heap, and process count
+- `lib/oled_display/screens/weather.ex` — skeleton/spec for a network-connected weather screen; skipped by auto-rotation when offline
 - `lib/oled_display/icon_data.ex` — 16 pre-rendered 16×16 RGBA8888 icons read from `assets/icons/*.rgba` at compile time. `OledDisplay.Xbm` provides XBM→RGBA utility (also usable at runtime).
 - `lib/oled_display/layouts.ex` — legacy layout helpers (A/B/C variants); retained for future Weather screen reuse
 - `lib/oled_display/wifi.ex` — WiFi GenServer
@@ -34,9 +34,20 @@ Each screen implements the `OledDisplay.Screen` behaviour. `Display` owns the ha
 :avm_pubsub.pub(:pubsub, :screen_request, {:switch, OledDisplay.Screens.Weather, location: "NYC"})
 ```
 
+**Boot phase (`:boot` mode)**
+`Display` starts in `:boot` mode. It drives `Splash.render/1` directly (Splash is **not** a `Screen`). Boot exits when:
+- at least `boot_min_ms` (2000 ms) have elapsed, **and**
+- WiFi is ready (`:connected` or `:ap_mode`), **or**
+- `boot_timeout_ms` (10000 ms) is reached.
+
+During `:boot`: screen requests and button short-presses are ignored. Button long-press (WiFi credential reset) stays active.
+
+**Auto-rotation**
+In `:running` mode, `Display` rotates through `@screens` every 10 s. Screens that return `false` from `available?/1` are skipped (e.g. `Weather` when offline). A short button press immediately cycles to the next available screen and resets the 10 s timer.
+
 **Current flow:**
 ```
-[Splash] —200 ms ticks, 2 s—► [System Stats] —1 s ticks—► (stays here)
+[Splash] —boot phase, 200 ms ticks—► [System Stats] —10 s auto-rotate—► [Weather] —10 s—► ...
 ```
 
 ## Icon system
@@ -78,6 +89,15 @@ python3 tools/gen_font.py <font_path> <size_px> assets/fonts/<name>.uff
 - For TTF/OTF, the script uses `FT_LOAD_RENDER | FT_LOAD_MONOCHROME | FT_LOAD_TARGET_MONO` to emit crisp 1-bit glyphs. Sizes below ~12 px with the old anti-aliased path lost thin strokes; the mono path fixes this.
 
 **Note:** `tools/` scripts are host-only. Never put them in `priv/` — that directory is bundled into the `.avm`.
+
+## WiFi AP naming
+
+When STA credentials are exhausted, the device falls back to AP mode. The SSID is derived from the ESP32 chip ID so multiple devices are distinguishable:
+
+- Format: `AtomVM-XXXX` where `XXXX` is the low 16 bits of `:erlang.system_info(:esp32_chip_id)` in lowercase hex, zero-padded to 4 digits.
+- Example: `AtomVM-a3f2`
+
+The AP SSID is published alongside `:ap_mode` status on `:avm_pubsub` and shown on both the boot splash and the System Stats screen.
 
 ## Adding a new icon
 

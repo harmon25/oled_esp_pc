@@ -1,68 +1,70 @@
 defmodule OledDisplay.Screens.Splash do
   @moduledoc """
-  Splash screen with a fake loading bar.
+  Pure renderer for the boot-phase splash screen.
 
-  Configurable duration via `@splash_duration_ms`. Renders at 200 ms
-  tick intervals for smooth bar animation, then switches to
-  `OledDisplay.Screens.SystemStats`.
+  Not a normal Screen — it has no init/1, handle_info/2, or autonomous
+  switching logic. Display drives the boot phase and calls render/1
+  directly with the current boot state.
   """
-
-  @behaviour OledDisplay.Screen
-
-  @splash_duration_ms 2000
-  @tick_ms 200
 
   @bg 0x000000
   @fg 0xFFFFFF
   @track 0x333333
 
-  # ── Screen behaviour ───────────────────────────────────────────
+  @doc """
+  Render splash given boot state.
 
-  @impl true
-  def init(_args) do
-    duration_ticks = div(@splash_duration_ms, @tick_ms)
-    state = %{tick_count: 0, duration_ticks: duration_ticks, tick_ms: @tick_ms}
-    {state, @tick_ms}
-  end
-
-  @impl true
+  Expected keys in `state`:
+    - `:tick_count` — current tick counter for progress bar
+    - `:boot_min_ticks` — total ticks for a full bar
+    - `:wifi_status` — `:connecting`, `:connected`, `:ap_mode`, or `nil`
+    - `:wifi_ip` — tuple like `{192,168,1,5}` or `nil`
+    - `:wifi_ap_ssid` — string or `nil`
+  """
   def render(state) do
-    text_items() ++ loading_bar(state) ++ [{:rect, 0, 0, 128, 64, @bg}]
-  end
-
-  @impl true
-  def handle_info(:tick, state) do
-    next_count = state.tick_count + 1
-
-    if next_count >= state.duration_ticks do
-      {:switch, OledDisplay.Screens.SystemStats, []}
-    else
-      new_state = %{state | tick_count: next_count}
-      {:noreply, new_state, [{:push, render(new_state)}]}
-    end
-  end
-
-  def handle_info(_msg, state) do
-    {:noreply, state}
+    text_items(state) ++ loading_bar(state) ++ [{:rect, 0, 0, 128, 64, @bg}]
   end
 
   # ── Private ──────────────────────────────────────────────────────
 
-  defp text_items do
-    [
-      {:text, 4, 16, :default16px, @fg, :transparent, "AtomVM | Elixir"}    ]
+  defp text_items(state) do
+    status = status_text(state)
+
+    base = [
+      {:text, 4, 12, :spleen5x8, @fg, :transparent, "AtomVM | Elixir"}
+    ]
+
+    if status do
+      base ++ [{:text, 4, 24, :spleen5x8, @fg, :transparent, status}]
+    else
+      base
+    end
   end
 
+  defp status_text(%{wifi_status: :connecting}), do: "Connecting WiFi..."
+
+  defp status_text(%{wifi_status: :connected, wifi_ip: {a, b, c, d}}) do
+    "IP: #{a}.#{b}.#{c}.#{d}"
+  end
+
+  defp status_text(%{wifi_status: :ap_mode, wifi_ap_ssid: ssid}) when is_binary(ssid) do
+    "AP: #{ssid}"
+  end
+
+  defp status_text(_), do: nil
+
   defp loading_bar(state) do
-    track = {:rect, 14, 58, 100, 3, @track}
+    track = {:rect, 14, 56, 100, 3, @track}
 
     max_w = 100
-    fill_w = div(state.tick_count * max_w, state.duration_ticks)
+    total = state.boot_min_ticks
+    current = min(state.tick_count, total)
+    fill_w = div(current * max_w, total)
     fill_w = min(fill_w, max_w)
 
     fill =
       if fill_w > 0 do
-        [{:rect, 14, 58, fill_w, 3, @fg}]
+        [{:rect, 14, 56, fill_w, 3, @fg}]
       else
         []
       end

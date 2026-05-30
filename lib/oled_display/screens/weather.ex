@@ -27,6 +27,12 @@ defmodule OledDisplay.Screens.Weather do
 
   @behaviour OledDisplay.Screen
 
+  @impl true
+  def available?(_args) do
+    {connected, _, _} = OledDisplay.WiFi.status()
+    connected
+  end
+
   alias OledDisplay.IconData
 
   @bg 0x000000
@@ -39,16 +45,16 @@ defmodule OledDisplay.Screens.Weather do
 
   # Cycling demo scenarios: {icon, temp_c, humidity}
   @demo_scenarios [
-    {:sun,           22, 45},
-    {:cloud_sun,     18, 58},
-    {:cloud,         14, 72},
-    {:rain1,         11, 85},
-    {:rain2,          9, 91},
-    {:rain_lightning,  8, 94},
-    {:lightning,      7, 89},
-    {:snow,          -2, 78},
-    {:wind,          10, 55},
-    {:moon,          16, 50}
+    {:sun, 22, 45},
+    {:cloud_sun, 18, 58},
+    {:cloud, 14, 72},
+    {:rain1, 11, 85},
+    {:rain2, 9, 91},
+    {:rain_lightning, 8, 94},
+    {:lightning, 7, 89},
+    {:snow, -2, 78},
+    {:wind, 10, 55},
+    {:moon, 16, 50}
   ]
 
   # ── Screen behaviour ───────────────────────────────────────────
@@ -59,12 +65,12 @@ defmodule OledDisplay.Screens.Weather do
     {icon, temp_c, humidity} = Enum.at(@demo_scenarios, demo_index)
 
     state = %{
-      location:    Keyword.get(args, :location, "Demo Mode"),
-      temp_c:      Keyword.get(args, :temp_c, temp_c),
-      humidity:    Keyword.get(args, :humidity, humidity),
-      icon:        Keyword.get(args, :icon, icon),
-      demo_index:  demo_index,
-      demo_total:  length(@demo_scenarios)
+      location: Keyword.get(args, :location, "Demo Mode"),
+      temp_c: Keyword.get(args, :temp_c, temp_c),
+      humidity: Keyword.get(args, :humidity, humidity),
+      icon: Keyword.get(args, :icon, icon),
+      demo_index: demo_index,
+      demo_total: length(@demo_scenarios)
     }
 
     {state, @demo_tick_ms}
@@ -73,24 +79,24 @@ defmodule OledDisplay.Screens.Weather do
   @impl true
   def render(state) do
     weather_icon = IconData.get(state.icon)
-    label        = IconData.weather_label(state.icon)
-    temp_str     = "#{state.temp_c}#{@deg}C"
-    hum_str      = "#{state.humidity}%"
-    demo_str     = "#{state.demo_index + 1}/#{state.demo_total}"
+    label = IconData.weather_label(state.icon)
+    temp_str = "#{state.temp_c}#{@deg}C"
+    hum_str = "#{state.humidity}%"
+    demo_str = "#{state.demo_index + 1}/#{state.demo_total}"
 
     [
       # Row 0: weather icon + condition label
-      {:image,  2,  2, @bg, weather_icon},
-      {:text,  22,  4, :cozette, @fg, :transparent, label},
+      {:image, 2, 2, @bg, weather_icon},
+      {:text, 22, 4, :cozette, @fg, :transparent, label},
 
       # Row 1: location
-      {:text,  22, 20, :cozette, @fg, :transparent, state.location},
+      {:text, 22, 20, :cozette, @fg, :transparent, state.location},
 
       # Row 2: temperature + humidity with utility icons
-      {:image,  2, 38, :transparent, IconData.get(:temperature)},
-      {:text,  20, 40, :default16px, @fg, :transparent, temp_str},
+      {:image, 2, 38, :transparent, IconData.get(:temperature)},
+      {:text, 20, 40, :default16px, @fg, :transparent, temp_str},
       {:image, 68, 38, :transparent, IconData.get(:humidity)},
-      {:text,  86, 40, :default16px, @fg, :transparent, hum_str},
+      {:text, 86, 40, :default16px, @fg, :transparent, hum_str},
 
       # Row 3: small demo cycle counter (bottom-right)
       {:text, 96, 54, :spleen5x8, @fg, :transparent, demo_str},
@@ -114,9 +120,9 @@ defmodule OledDisplay.Screens.Weather do
     # Accept live data from a future network fetch; stop demo cycling
     new_state = %{
       state
-      | temp_c:   data[:temp_c]   || state.temp_c,
+      | temp_c: data[:temp_c] || state.temp_c,
         humidity: data[:humidity] || state.humidity,
-        icon:     data[:icon]     || state.icon
+        icon: data[:icon] || state.icon
     }
 
     {:noreply, new_state, [{:push, render(new_state)}]}

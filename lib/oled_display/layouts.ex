@@ -30,7 +30,9 @@ defmodule OledDisplay.Layouts do
   defp layout_a(weather_key, temp_str, humidity_str, time_str, wifi_label) do
     weather = IconData.get(weather_key)
     weather_icon = {:image, 2, 22, @bg, weather}
-    weather_text = {:text, 20, 22, :default16px, @fg, :transparent, IconData.weather_label(weather_key)}
+
+    weather_text =
+      {:text, 20, 22, :default16px, @fg, :transparent, IconData.weather_label(weather_key)}
 
     temp = IconData.get(:temperature)
     temp_icon = {:image, 2, 42, :transparent, temp}
@@ -48,7 +50,18 @@ defmodule OledDisplay.Layouts do
     clk_icon = {:image, 74, 2, :transparent, clk}
     clk_text = {:text, 92, 2, :default16px, @fg, :transparent, time_str}
 
-    [clk_text, clk_icon, wifi_text, wifi_icon, hum_text, hum_icon, temp_text, temp_icon, weather_text, weather_icon]
+    [
+      clk_text,
+      clk_icon,
+      wifi_text,
+      wifi_icon,
+      hum_text,
+      hum_icon,
+      temp_text,
+      temp_icon,
+      weather_text,
+      weather_icon
+    ]
   end
 
   # ── Layout B: Weather Focus ─────────────────────────────────────
@@ -60,7 +73,9 @@ defmodule OledDisplay.Layouts do
   defp layout_b(weather_key, temp_str, humidity_str, _time_str, _wifi_label) do
     weather = IconData.get(weather_key)
     weather_icon = {:image, 56, 4, @bg, weather}
-    weather_text = {:text, 56, 22, :default16px, @fg, :transparent, IconData.weather_label(weather_key)}
+
+    weather_text =
+      {:text, 56, 22, :default16px, @fg, :transparent, IconData.weather_label(weather_key)}
 
     temp = IconData.get(:temperature)
     temp_icon = {:image, 2, 42, :transparent, temp}
@@ -83,7 +98,9 @@ defmodule OledDisplay.Layouts do
   defp layout_c(weather_key, temp_str, humidity_str, time_str, wifi_label) do
     weather = IconData.get(weather_key)
     weather_icon = {:image, 2, 56, @bg, weather}
-    weather_text = {:text, 20, 56, :default16px, @fg, :transparent, IconData.weather_label(weather_key)}
+
+    weather_text =
+      {:text, 20, 56, :default16px, @fg, :transparent, IconData.weather_label(weather_key)}
 
     temp = IconData.get(:temperature)
     temp_icon = {:image, 2, 20, :transparent, temp}
@@ -101,6 +118,17 @@ defmodule OledDisplay.Layouts do
     clk_icon = {:image, 2, 2, :transparent, clk}
     clk_text = {:text, 20, 2, :default16px, @fg, :transparent, time_str}
 
-    [weather_text, weather_icon, wifi_text, wifi_icon, hum_text, hum_icon, temp_text, temp_icon, clk_text, clk_icon]
+    [
+      weather_text,
+      weather_icon,
+      wifi_text,
+      wifi_icon,
+      hum_text,
+      hum_icon,
+      temp_text,
+      temp_icon,
+      clk_text,
+      clk_icon
+    ]
   end
 end

@@ -3,9 +3,11 @@ defmodule OledDisplay.Xbm do
 
   def to_rgba(xbm, width, height) do
     bpr = div(width + 7, 8)
+
     for y <- 0..(height - 1), x <- 0..(width - 1), into: <<>> do
       byte = :binary.at(xbm, y * bpr + div(x, 8))
       mask = 1 <<< rem(x, 8)
+
       if (byte &&& mask) != 0 do
         <<0xFF, 0xFF, 0xFF, 0xFF>>
       else
@@ -18,22 +20,22 @@ end
 defmodule OledDisplay.IconData do
   @icons_dir Path.expand("../../assets/icons", __DIR__)
 
-  @sun     File.read!(Path.join(@icons_dir, "weather_sun.rgba"))
-  @cloud   File.read!(Path.join(@icons_dir, "weather_cloud.rgba"))
+  @sun File.read!(Path.join(@icons_dir, "weather_sun.rgba"))
+  @cloud File.read!(Path.join(@icons_dir, "weather_cloud.rgba"))
   @cloud_sun File.read!(Path.join(@icons_dir, "weather_cloud_sun.rgba"))
-  @rain1   File.read!(Path.join(@icons_dir, "weather_rain1.rgba"))
+  @rain1 File.read!(Path.join(@icons_dir, "weather_rain1.rgba"))
   @lightning File.read!(Path.join(@icons_dir, "weather_lightning.rgba"))
-  @snow    File.read!(Path.join(@icons_dir, "weather_snow.rgba"))
-  @wind    File.read!(Path.join(@icons_dir, "weather_wind.rgba"))
-  @moon    File.read!(Path.join(@icons_dir, "weather_moon.rgba"))
-  @rain2   File.read!(Path.join(@icons_dir, "weather_rain2.rgba"))
+  @snow File.read!(Path.join(@icons_dir, "weather_snow.rgba"))
+  @wind File.read!(Path.join(@icons_dir, "weather_wind.rgba"))
+  @moon File.read!(Path.join(@icons_dir, "weather_moon.rgba"))
+  @rain2 File.read!(Path.join(@icons_dir, "weather_rain2.rgba"))
   @rain_lightning File.read!(Path.join(@icons_dir, "weather_rain_lightning.rgba"))
-  @wifi1   File.read!(Path.join(@icons_dir, "utility_wifi1.rgba"))
+  @wifi1 File.read!(Path.join(@icons_dir, "utility_wifi1.rgba"))
   @wifi_off File.read!(Path.join(@icons_dir, "utility_wifi_off.rgba"))
   @up_arrow File.read!(Path.join(@icons_dir, "utility_up_arrow.rgba"))
   @temperature File.read!(Path.join(@icons_dir, "utility_temperature.rgba"))
   @humidity File.read!(Path.join(@icons_dir, "utility_humidity.rgba"))
-  @clock   File.read!(Path.join(@icons_dir, "utility_clock.rgba"))
+  @clock File.read!(Path.join(@icons_dir, "utility_clock.rgba"))
 
   def get(:sun), do: {:rgba8888, 16, 16, @sun}
   def get(:cloud), do: {:rgba8888, 16, 16, @cloud}
@@ -52,7 +54,19 @@ defmodule OledDisplay.IconData do
   def get(:humidity), do: {:rgba8888, 16, 16, @humidity}
   def get(:clock), do: {:rgba8888, 16, 16, @clock}
 
-  def weather_icons, do: [:sun, :cloud_sun, :cloud, :rain1, :rain2, :rain_lightning, :lightning, :snow, :wind, :moon]
+  def weather_icons,
+    do: [
+      :sun,
+      :cloud_sun,
+      :cloud,
+      :rain1,
+      :rain2,
+      :rain_lightning,
+      :lightning,
+      :snow,
+      :wind,
+      :moon
+    ]
 
   def weather_label(:sun), do: "Sunny"
   def weather_label(:cloud_sun), do: "P.Cloudy"

@@ -1,6 +1,6 @@
 defmodule OledDisplay.Screens.Weather do
   @moduledoc """
-  Weather screen showing real data fetched from Open-Meteo.
+  Weather screen showing real data fetched from wttr.in.
 
   Cycles through configured locations every 5 seconds.
   Data is read from the shared ETS cache maintained by
@@ -44,6 +44,15 @@ defmodule OledDisplay.Screens.Weather do
   end
 
   @impl true
+  # Guard: render a placeholder if init was somehow called with no locations
+  # (e.g. a manual :screen_request bypassed available?/1).
+  def render(%{locations: []} = _state) do
+    [
+      {:text, 14, 28, :spleen5x8, @fg, :transparent, "No locations set"},
+      {:rect, 0, 0, 128, 64, @bg}
+    ]
+  end
+
   def render(state) do
     current = Enum.at(state.locations, state.index)
     data = DisplayState.get(:weather, {:loc, current.name}, %{})

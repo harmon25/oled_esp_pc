@@ -1,5 +1,5 @@
 defmodule OledDisplay do
-  @compile {:no_warn_undefined, [I2C, AVMPort]}
+  @compile {:no_warn_undefined, [I2C, AVMPort, :avm_pubsub]}
 
   @moduledoc """
   AtomVM SSD1306 OLED display demo for ESP32-C3.

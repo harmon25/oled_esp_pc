@@ -72,6 +72,9 @@ defmodule OledDisplay.Weather do
       interval: @fetch_interval_ms,
       wifi_connected: wifi_connected,
       fetch_timer: nil,
+      # Counts how many {:fetched, ...} messages are still expected from
+      # the current in-flight worker.  Used to prevent overlapping spawns.
+      fetch_count_remaining: 0,
       ready_set: MapSet.new()
     }
 
@@ -143,14 +146,16 @@ defmodule OledDisplay.Weather do
         MapSet.put(state.ready_set, name)
       end
 
-    {:noreply, %{state | ready_set: new_ready_set}}
+    new_count = max(0, state.fetch_count_remaining - 1)
+    {:noreply, %{state | ready_set: new_ready_set, fetch_count_remaining: new_count}}
   end
 
   def handle_info({:fetched, name, {:error, reason}}, state) do
     Log.debugf("Weather", "fetched ~s error=~p", [name, reason])
     existing = DisplayState.get(:weather, {:loc, name}, %{}) |> Map.put(:status, :error)
     DisplayState.put(:weather, {:loc, name}, existing)
-    {:noreply, state}
+    new_count = max(0, state.fetch_count_remaining - 1)
+    {:noreply, %{state | fetch_count_remaining: new_count}}
   end
 
   def handle_info(_msg, state) do
@@ -160,30 +165,38 @@ defmodule OledDisplay.Weather do
   # ── Internal ────────────────────────────────────────────────────
 
   defp do_fetch_all(state) do
-    # Spawn a worker that walks the location list one at a time and
-    # mails each result back to us. Sequential fetching keeps only a
-    # single TCP socket open at a time, which matters on the ESP32-C3.
-    owner = self()
+    # Guard: if a previous worker is still sending {:fetched, ...} messages,
+    # skip this spawn.  Prevents multiple TCP sockets from being open
+    # concurrently (e.g. timer tick racing a WiFi-reconnect event).
+    if state.fetch_count_remaining > 0 do
+      Log.debug("Weather", "fetch already in-flight, skipping duplicate spawn")
+      state
+    else
+      # Spawn a worker that walks the location list one at a time and
+      # mails each result back to us. Sequential fetching keeps only a
+      # single TCP socket open at a time, which matters on the ESP32-C3.
+      owner = self()
 
-    pid =
-      spawn(fn ->
-        for loc <- state.locations do
-          result = Client.fetch(%{lat: loc.lat, lon: loc.lon, units: state.units})
-          send(owner, {:fetched, loc.name, result})
-        end
-      end)
+      pid =
+        spawn(fn ->
+          for loc <- state.locations do
+            result = Client.fetch(%{lat: loc.lat, lon: loc.lon, units: state.units})
+            send(owner, {:fetched, loc.name, result})
+          end
+        end)
 
-    Log.debugf("Weather", "spawned fetch pid=~p locs=~p", [pid, length(state.locations)])
+      Log.debugf("Weather", "spawned fetch pid=~p locs=~p", [pid, length(state.locations)])
 
-    state1 = cancel_timer(state)
-    timer_ref = Process.send_after(self(), :fetch_all, state1.interval + jitter())
-    %{state1 | fetch_timer: timer_ref}
+      state1 = cancel_timer(state)
+      timer_ref = Process.send_after(self(), :fetch_all, state1.interval + jitter(state1.interval))
+      %{state1 | fetch_timer: timer_ref, fetch_count_remaining: length(state.locations)}
+    end
   end
 
-  defp jitter do
+  defp jitter(interval) do
     # AtomVM provides :atomvm.random/0 (32-bit unsigned integer).
-    # Scale it to 0–10% of the interval.
-    max_jitter = div(@fetch_interval_ms, 10)
+    # Scale it to 0–10% of the runtime interval (not the compile-time default).
+    max_jitter = div(interval, 10)
     rem(:atomvm.random(), max_jitter)
   end
 

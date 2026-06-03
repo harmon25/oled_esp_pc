@@ -1,6 +1,6 @@
 defmodule OledDisplay.Screens.SystemStats do
   @moduledoc """
-  System statistics screen (cozette font, 13px line height).
+  System statistics screen (spleen5x8 font, 8px line height).
 
   y=0  [wifi][up_arrow]            0d 00:00   16px icons, uptime right-aligned
   y=18 128k free  45k min                     free + min heap
@@ -17,8 +17,8 @@ defmodule OledDisplay.Screens.SystemStats do
   @fg 0xFFFFFF
 
   @font :spleen5x8
-  # Cozette 6×13 → advance_x=6px per char
-  @char_w 6
+  # Spleen 5×8 → advance_x=5px per char
+  @char_w 5
 
   @tick_ms 60_000
 
@@ -105,15 +105,18 @@ defmodule OledDisplay.Screens.SystemStats do
   end
 
   def handle_info({:wifi_status, {:connected, ip}}, state) do
-    {:noreply, %{state | wifi_connected: true, wifi_ip: ip}}
+    new_state = %{state | wifi_connected: true, wifi_ip: ip}
+    {:noreply, new_state, [{:push, render(new_state)}]}
   end
 
   def handle_info({:wifi_status, {:ap_mode, ap_ssid}}, state) do
-    {:noreply, %{state | wifi_connected: false, wifi_ip: nil, wifi_ap_ssid: ap_ssid}}
+    new_state = %{state | wifi_connected: false, wifi_ip: nil, wifi_ap_ssid: ap_ssid}
+    {:noreply, new_state, [{:push, render(new_state)}]}
   end
 
   def handle_info({:wifi_status, _status}, state) do
-    {:noreply, %{state | wifi_connected: false, wifi_ip: nil}}
+    new_state = %{state | wifi_connected: false, wifi_ip: nil}
+    {:noreply, new_state, [{:push, render(new_state)}]}
   end
 
   def handle_info(_msg, state) do

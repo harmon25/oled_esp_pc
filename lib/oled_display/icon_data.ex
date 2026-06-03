@@ -20,39 +20,43 @@ end
 defmodule OledDisplay.IconData do
   @icons_dir Path.expand("../../assets/icons", __DIR__)
 
-  @sun File.read!(Path.join(@icons_dir, "weather_sun.rgba"))
-  @cloud File.read!(Path.join(@icons_dir, "weather_cloud.rgba"))
-  @cloud_sun File.read!(Path.join(@icons_dir, "weather_cloud_sun.rgba"))
-  @rain1 File.read!(Path.join(@icons_dir, "weather_rain1.rgba"))
-  @lightning File.read!(Path.join(@icons_dir, "weather_lightning.rgba"))
-  @snow File.read!(Path.join(@icons_dir, "weather_snow.rgba"))
-  @wind File.read!(Path.join(@icons_dir, "weather_wind.rgba"))
-  @moon File.read!(Path.join(@icons_dir, "weather_moon.rgba"))
-  @rain2 File.read!(Path.join(@icons_dir, "weather_rain2.rgba"))
-  @rain_lightning File.read!(Path.join(@icons_dir, "weather_rain_lightning.rgba"))
-  @wifi1 File.read!(Path.join(@icons_dir, "utility_wifi1.rgba"))
-  @wifi_off File.read!(Path.join(@icons_dir, "utility_wifi_off.rgba"))
-  @up_arrow File.read!(Path.join(@icons_dir, "utility_up_arrow.rgba"))
-  @temperature File.read!(Path.join(@icons_dir, "utility_temperature.rgba"))
-  @humidity File.read!(Path.join(@icons_dir, "utility_humidity.rgba"))
-  @clock File.read!(Path.join(@icons_dir, "utility_clock.rgba"))
+  # Each attribute is the complete ready-to-use tuple.  Collapsing the binary
+  # read and the tuple construction into a single attribute ensures the binary
+  # lives only once in the module's literal pool — no separate raw-binary entry
+  # that AtomVM might allocate independently alongside the tuple.
+  @sun {:rgba8888, 16, 16, File.read!(Path.join(@icons_dir, "weather_sun.rgba"))}
+  @cloud {:rgba8888, 16, 16, File.read!(Path.join(@icons_dir, "weather_cloud.rgba"))}
+  @cloud_sun {:rgba8888, 16, 16, File.read!(Path.join(@icons_dir, "weather_cloud_sun.rgba"))}
+  @rain1 {:rgba8888, 16, 16, File.read!(Path.join(@icons_dir, "weather_rain1.rgba"))}
+  @lightning {:rgba8888, 16, 16, File.read!(Path.join(@icons_dir, "weather_lightning.rgba"))}
+  @snow {:rgba8888, 16, 16, File.read!(Path.join(@icons_dir, "weather_snow.rgba"))}
+  @wind {:rgba8888, 16, 16, File.read!(Path.join(@icons_dir, "weather_wind.rgba"))}
+  @moon {:rgba8888, 16, 16, File.read!(Path.join(@icons_dir, "weather_moon.rgba"))}
+  @rain2 {:rgba8888, 16, 16, File.read!(Path.join(@icons_dir, "weather_rain2.rgba"))}
+  @rain_lightning {:rgba8888, 16, 16, File.read!(Path.join(@icons_dir, "weather_rain_lightning.rgba"))}
+  @wifi1 {:rgba8888, 16, 16, File.read!(Path.join(@icons_dir, "utility_wifi1.rgba"))}
+  @wifi_off {:rgba8888, 16, 16, File.read!(Path.join(@icons_dir, "utility_wifi_off.rgba"))}
+  @up_arrow {:rgba8888, 16, 16, File.read!(Path.join(@icons_dir, "utility_up_arrow.rgba"))}
+  @temperature {:rgba8888, 16, 16, File.read!(Path.join(@icons_dir, "utility_temperature.rgba"))}
+  @humidity {:rgba8888, 16, 16, File.read!(Path.join(@icons_dir, "utility_humidity.rgba"))}
+  @clock {:rgba8888, 16, 16, File.read!(Path.join(@icons_dir, "utility_clock.rgba"))}
 
-  def get(:sun), do: {:rgba8888, 16, 16, @sun}
-  def get(:cloud), do: {:rgba8888, 16, 16, @cloud}
-  def get(:cloud_sun), do: {:rgba8888, 16, 16, @cloud_sun}
-  def get(:rain1), do: {:rgba8888, 16, 16, @rain1}
-  def get(:lightning), do: {:rgba8888, 16, 16, @lightning}
-  def get(:snow), do: {:rgba8888, 16, 16, @snow}
-  def get(:wind), do: {:rgba8888, 16, 16, @wind}
-  def get(:moon), do: {:rgba8888, 16, 16, @moon}
-  def get(:rain2), do: {:rgba8888, 16, 16, @rain2}
-  def get(:rain_lightning), do: {:rgba8888, 16, 16, @rain_lightning}
-  def get(:wifi1), do: {:rgba8888, 16, 16, @wifi1}
-  def get(:wifi_off), do: {:rgba8888, 16, 16, @wifi_off}
-  def get(:up_arrow), do: {:rgba8888, 16, 16, @up_arrow}
-  def get(:temperature), do: {:rgba8888, 16, 16, @temperature}
-  def get(:humidity), do: {:rgba8888, 16, 16, @humidity}
-  def get(:clock), do: {:rgba8888, 16, 16, @clock}
+  def get(:sun), do: @sun
+  def get(:cloud), do: @cloud
+  def get(:cloud_sun), do: @cloud_sun
+  def get(:rain1), do: @rain1
+  def get(:lightning), do: @lightning
+  def get(:snow), do: @snow
+  def get(:wind), do: @wind
+  def get(:moon), do: @moon
+  def get(:rain2), do: @rain2
+  def get(:rain_lightning), do: @rain_lightning
+  def get(:wifi1), do: @wifi1
+  def get(:wifi_off), do: @wifi_off
+  def get(:up_arrow), do: @up_arrow
+  def get(:temperature), do: @temperature
+  def get(:humidity), do: @humidity
+  def get(:clock), do: @clock
 
   def weather_icons,
     do: [

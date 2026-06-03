@@ -20,7 +20,7 @@ Multi-module AtomVM app for SSD1306 OLED on ESP32-C3. No tests, no CI.
 - `lib/oled_display/display_state.ex` — GenServer that owns the shared `:oled_display_state` ETS table; provides `get/3`, `put/3`, `delete/2`, `all/1`
 - `lib/oled_display/screens/splash.ex` — **pure boot-phase renderer** (not a Screen). Driven by `Display` during boot to show app name, real WiFi status, weather fetch status, and an animated progress bar
 - `lib/oled_display/screens/system_stats.ex` — shows WiFi status / AP name / IP, uptime, heap, and process count; counters persisted in ETS so uptime survives screen cycling
-- `lib/oled_display/screens/weather.ex` — live Open-Meteo weather screen; cycles through configured locations every 5 s; skipped when offline or no locations configured
+- `lib/oled_display/screens/weather.ex` — live wttr.in weather screen; cycles through configured locations every 5 s; skipped when offline or no locations configured
 - `lib/oled_display/weather.ex` — GenServer that fetches weather from wttr.in over plain HTTP, caches results in ETS, and publishes on `:avm_pubsub`
 - `lib/oled_display/weather/client.ex` — raw `:gen_tcp` HTTP/1.1 client for wttr.in's pipe-delimited format endpoint
 - `lib/oled_display/icon_data.ex` — 16 pre-rendered 16×16 RGBA8888 icons read from `assets/icons/*.rgba` at compile time. `OledDisplay.Xbm` provides XBM→RGBA utility (also usable at runtime).

@@ -12,6 +12,9 @@ defmodule OledDisplay.Weather.Client do
 
   @compile {:no_warn_undefined, [:gen_tcp]}
 
+  require OledDisplay.Log
+  alias OledDisplay.Log
+
   @host "wttr.in"
   @recv_timeout_ms 8_000
 
@@ -20,7 +23,7 @@ defmodule OledDisplay.Weather.Client do
       do_fetch(%{lat: lat, lon: lon, units: units})
     catch
       class, reason ->
-        :io.format("Weather.Client: caught ~p ~p~n", [class, reason])
+        Log.debugf("Weather.Client", "caught ~p ~p", [class, reason])
         {:error, {class, reason}}
     end
   end
@@ -29,7 +32,7 @@ defmodule OledDisplay.Weather.Client do
     path = "/#{lat},#{lon}?format=%t|%h|%C"
     host_charlist = :erlang.binary_to_list(@host)
 
-    IO.puts("Weather.Client: fetching #{@host}#{path}")
+    Log.debug("Weather.Client", "fetching #{@host}#{path}")
 
     with {:ok, sock} <- :gen_tcp.connect(host_charlist, 80, [{:active, false}, :binary]) do
       req =
@@ -39,7 +42,7 @@ defmodule OledDisplay.Weather.Client do
           "\r\n"
 
       :ok = :gen_tcp.send(sock, req)
-      IO.puts("Weather.Client: request sent, receiving...")
+      Log.debug("Weather.Client", "request sent, receiving...")
 
       case recv_all(sock, <<>>) do
         {:ok, raw} ->
@@ -47,7 +50,7 @@ defmodule OledDisplay.Weather.Client do
 
           case extract_body(raw) do
             {:ok, body} ->
-              :io.format("Weather.Client: body=~p~n", [body])
+              Log.debugf("Weather.Client", "body=~p", [body])
               parse(body, units)
 
             {:error, reason} ->
@@ -60,7 +63,7 @@ defmodule OledDisplay.Weather.Client do
       end
     else
       {:error, reason} ->
-        :io.format("Weather.Client: connect error ~p~n", [reason])
+        Log.debugf("Weather.Client", "connect error ~p", [reason])
         {:error, reason}
     end
   end
@@ -121,7 +124,7 @@ defmodule OledDisplay.Weather.Client do
          }}
 
       _other ->
-        :io.format("Weather.Client: parse failed for body=~p~n", [body])
+        Log.debugf("Weather.Client", "parse failed for body=~p", [body])
         {:error, :parse_failed}
     end
   end

@@ -105,7 +105,8 @@ defmodule OledDisplay.Display do
     state =
       if now - state.last_heap_log >= @heap_log_interval_s do
         heap = :erlang.system_info(:esp32_free_heap_size)
-        Log.debugf("Display", "heap=~pB screen=~p", [heap, state.screen])
+        procs = :erlang.system_info(:process_count)
+        Log.debugf("Display", "heap=~pB procs=~p screen=~p", [heap, procs, state.screen])
         %{state | last_heap_log: now}
       else
         state
@@ -126,7 +127,10 @@ defmodule OledDisplay.Display do
   # Running-mode wifi status
   def handle_info({:pub, [:wifi_wiz, :wifi_status], _from, status}, %{mode: :running} = state) do
     Log.debugf("Display", "pub wifi_status status=~p mode=running", [status])
-    result = state.screen.handle_info({:wifi_status, status}, state.screen_state)
+    # Normalize the raw WifiWiz payload before forwarding so screens
+    # always see {:connected, ip_4tuple} rather than {:connected, {ip, gateway}}.
+    normalized = normalize_wifi_status(status)
+    result = state.screen.handle_info({:wifi_status, normalized}, state.screen_state)
     handle_screen_result(result, state)
   end
 
@@ -287,10 +291,31 @@ defmodule OledDisplay.Display do
   end
 
   defp cancel_tick(nil), do: :ok
-  defp cancel_tick(ref), do: Process.cancel_timer(ref)
+
+  defp cancel_tick(ref) do
+    Process.cancel_timer(ref)
+    # Flush any already-delivered :tick from the mailbox.  cancel_timer/1
+    # cannot remove messages that already arrived; without this flush a stale
+    # :tick would be dequeued later and trigger an extra render cycle,
+    # allocating icon binaries and leaking heap on every occurrence.
+    receive do
+      :tick -> :ok
+    after
+      0 -> :ok
+    end
+  end
 
   defp cancel_rotate(nil), do: :ok
-  defp cancel_rotate(ref), do: Process.cancel_timer(ref)
+
+  defp cancel_rotate(ref) do
+    Process.cancel_timer(ref)
+    # Same flush for :rotate to prevent spurious extra screen switches.
+    receive do
+      :rotate -> :ok
+    after
+      0 -> :ok
+    end
+  end
 
   # True when no weather locations are configured (weather screen will
   # be skipped and the boot gate doesn't wait for a fetch).
@@ -334,7 +359,14 @@ defmodule OledDisplay.Display do
     end) || hd(@screens)
   end
 
-  defp update_wifi_status(state, {:connected, ip}) do
+  # Normalize raw WifiWiz payload: {:connected, {ip, gateway}} → {:connected, ip}.
+  # Screens and helpers always receive a bare 4-tuple IP, never the {ip, gateway} pair.
+  defp normalize_wifi_status({:connected, {ip, _gateway}}), do: {:connected, ip}
+  defp normalize_wifi_status(status), do: status
+
+  # WifiWiz publishes {:connected, {ip, gateway}}; strip the gateway so
+  # the rest of Display (and the Splash renderer) see a bare 4-tuple IP.
+  defp update_wifi_status(state, {:connected, {ip, _gateway}}) do
     %{state | wifi_status: :connected, wifi_ip: ip}
   end
 
@@ -347,7 +379,10 @@ defmodule OledDisplay.Display do
   end
 
   defp update_wifi_status(state, _other) do
-    state
+    # Covers :disconnected (published by WifiWiz), :connecting, and any
+    # future unknown status atoms.  Clearing wifi_ip ensures the splash and
+    # screens don't keep showing a stale IP after the connection drops.
+    %{state | wifi_status: nil, wifi_ip: nil}
   end
 
   def wipe(display, width \\ 128, height \\ 64) do

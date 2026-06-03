@@ -17,27 +17,31 @@ Multi-module AtomVM app for SSD1306 OLED on ESP32-C3. No tests, no CI.
 - `lib/oled_display.ex` — app entrypoint (exports `start/0`)
 - `lib/oled_display/screen.ex` — behaviour definition for display screens (`init/1`, `render/1`, `handle_info/2`, `available?/1`)
 - `lib/oled_display/display.ex` — GenServer driving AtomGL via `avm_scene`; owns the hardware port, manages a `:boot` phase, then routes ticks and pubsub to the active screen; handles screen switching and auto-rotation
-- `lib/oled_display/screens/splash.ex` — **pure boot-phase renderer** (not a Screen). Driven by `Display` during boot to show app name, real WiFi status, and an animated progress bar
-- `lib/oled_display/screens/system_stats.ex` — shows WiFi status / AP name / IP, uptime, heap, and process count
-- `lib/oled_display/screens/weather.ex` — skeleton/spec for a network-connected weather screen; skipped by auto-rotation when offline
+- `lib/oled_display/display_state.ex` — GenServer that owns the shared `:oled_display_state` ETS table; provides `get/3`, `put/3`, `delete/2`, `all/1`
+- `lib/oled_display/screens/splash.ex` — **pure boot-phase renderer** (not a Screen). Driven by `Display` during boot to show app name, real WiFi status, weather fetch status, and an animated progress bar
+- `lib/oled_display/screens/system_stats.ex` — shows WiFi status / AP name / IP, uptime, heap, and process count; counters persisted in ETS so uptime survives screen cycling
+- `lib/oled_display/screens/weather.ex` — live Open-Meteo weather screen; cycles through configured locations every 5 s; skipped when offline or no locations configured
+- `lib/oled_display/weather.ex` — GenServer that fetches weather from wttr.in over plain HTTP, caches results in ETS, and publishes on `:avm_pubsub`
+- `lib/oled_display/weather/client.ex` — raw `:gen_tcp` HTTP/1.1 client for wttr.in's pipe-delimited format endpoint
 - `lib/oled_display/icon_data.ex` — 16 pre-rendered 16×16 RGBA8888 icons read from `assets/icons/*.rgba` at compile time. `OledDisplay.Xbm` provides XBM→RGBA utility (also usable at runtime).
 - `lib/oled_display/layouts.ex` — legacy layout helpers (A/B/C variants); retained for future Weather screen reuse
-- `lib/oled_display/wifi.ex` — WiFi GenServer
+- `lib/oled_display/wifi.ex` — WiFi GenServer; mirrors status into `DisplayState`
 - `lib/oled_display/application_supervisor.ex` — OTP supervision tree
 
 ## Screen architecture
 
-Each screen implements the `OledDisplay.Screen` behaviour. `Display` owns the hardware port, subscribes to `:avm_pubsub` (`:wifi_status`, `:screen_request`), and routes every `:tick` and pubsub message to the active screen.
+Each screen implements the `OledDisplay.Screen` behaviour. `Display` owns the hardware port, subscribes to `:avm_pubsub` (`:wifi_status`, `:screen_request`, `:weather_ready`, `:weather_data`), and routes every `:tick` and pubsub message to the active screen.
 
 **Screen switching API:** any process can request a switch via `:avm_pubsub`:
 ```elixir
-:avm_pubsub.pub(:pubsub, :screen_request, {:switch, OledDisplay.Screens.Weather, location: "NYC"})
+:avm_pubsub.pub(:pubsub, :screen_request, {:switch, OledDisplay.Screens.Weather, []})
 ```
 
 **Boot phase (`:boot` mode)**
 `Display` starts in `:boot` mode. It drives `Splash.render/1` directly (Splash is **not** a `Screen`). Boot exits when:
 - at least `boot_min_ms` (2000 ms) have elapsed, **and**
-- WiFi is ready (`:connected` or `:ap_mode`), **or**
+- WiFi is ready (`:connected` or `:ap_mode`), **and**
+- at least one location has been fetched successfully (or no locations are configured), **or**
 - `boot_timeout_ms` (10000 ms) is reached.
 
 During `:boot`: screen requests and button short-presses are ignored. Button long-press (WiFi credential reset) stays active.
@@ -99,6 +103,56 @@ When STA credentials are exhausted, the device falls back to AP mode. The SSID i
 
 The AP SSID is published alongside `:ap_mode` status on `:avm_pubsub` and shown on both the boot splash and the System Stats screen.
 
+## Display state (ETS)
+
+`OledDisplay.DisplayState` owns a single `:public` named ETS table. Any process can write; reads are lock-free.
+
+| Namespace | Key | Value | Writer | Reader |
+|---|---|---|---|---|
+| `:weather` | `:locations` | `[%{name, lat, lon}, ...]` | `Weather` | `Screens.Weather` |
+| `:weather` | `:units` | `:celsius` / `:fahrenheit` | `Weather` | `Screens.Weather` |
+| `:weather` | `{:loc, name}` | `%{status, temp, humidity, icon, is_day, fetched_at}` | `Weather` | `Screens.Weather` |
+| `:sysstats` | `:uptime_min` | integer | `SystemStats` | `SystemStats` |
+| `:sysstats` | `:heap_kb` | integer / nil | `SystemStats` | `SystemStats` |
+| `:sysstats` | `:min_heap_kb` | integer / nil | `SystemStats` | `SystemStats` |
+| `:sysstats` | `:procs` | integer / nil | `SystemStats` | `SystemStats` |
+| `:wifi` | `:status` | `{connected_bool, ip_tuple_or_nil, ap_ssid}` | `WiFi` | any screen |
+
+## Weather
+
+Weather data comes from [wttr.in](http://wttr.in) over **plain HTTP** (port 80). No API key required.
+
+We use plain HTTP because TLS handshakes on ESP32-C3 exhaust the limited heap (~30 KB per connection), causing `out_of_memory` crashes. wttr.in returns a tiny pipe-delimited response (e.g. `+22°C|65%|Partly cloudy`) with `?format=%t|%h|%C` — no JSON, no TLS, ~30 bytes.
+
+**Configuration:** compile-time in `config/config.exs`:
+```elixir
+config :oled_display, :weather,
+  units: :celsius,                 # or :fahrenheit
+  fetch_interval_ms: 900_000,    # 15 min
+  locations: [
+    %{name: "Toronto", lat: 43.6532, lon: -79.3832},
+    %{name: "Tokyo",   lat: 35.6762, lon: 139.6503}
+  ]
+```
+
+**Fetch cadence:** first fetch fires ~3 s after boot (or immediately on `:wifi_status -> :connected`). Subsequent fetches every `fetch_interval_ms` (±10 % jitter). Locations are fetched **sequentially** (one at a time) to keep peak heap usage low.
+
+**Condition → icon mapping:** wttr.in English condition strings are matched keyword-by-keyword to the 10-icon set (clear→:sun, partly cloudy→:cloud_sun, rain→:rain1, etc.).
+
+**Pubsub:**
+- `{:weather_data, name}` — published after every successful fetch
+- `{:weather_ready, name}` — published on the *first* success per location
+
+**Failure handling:**
+- WiFi down → `Screens.Weather.available?/1` returns false; screen skipped by auto-rotation
+- HTTP/parse error → logged; ETS entry keeps last good values; `:status` set to `:error`
+- Stale data (>30 min) → shown with `*` suffix in the location counter slot
+
+**Adding a location:**
+1. Run `tools/geocode.sh "City Name"` to look up lat/lon
+2. Paste the printed map into `config/config.exs`
+3. Recompile and flash
+
 ## Adding a new icon
 
 1. Get XBM data (16×16 = 32 bytes) from Dhole or another source
@@ -154,3 +208,95 @@ Warning: following modules or functions are not available on AtomVM:
 ```
 
 These are false positives from ExAtomVM's static analysis. The modules ARE available in AtomVM — they just live in the pre-flashed boot AVM partition (standard library), not in `main.avm`. `GenServer`, `Supervisor`, `Agent`, etc. all work correctly on the device.
+
+## Built-in random functions
+
+AtomVM does **not** ship `:rand` (it is not in the boot AVM). Use the AtomVM-specific `:atomvm` module instead:
+
+- `:atomvm.random/0` — returns a 32-bit unsigned integer (`0..4294967295`).
+
+Example (jitter up to 10% of an interval):
+```elixir
+max_jitter = div(interval_ms, 10)
+jitter = rem(:atomvm.random(), max_jitter)
+```
+
+Add `:atomvm` to `@compile {:no_warn_undefined, [...]}` in the calling module so ExAtomVM does not warn about it.
+
+
+## `avm_pubsub` Elixir Interop Guide
+
+**Overview**
+Because Elixir runs on the Erlang VM, you can call Erlang modules directly by using their module names as atoms. The `avm_pubsub` module is a lightweight, MQTT-style PubSub server where topics are represented as lists, supporting single-level (`+`) and multi-level (`#`) wildcards.
+
+### 1. Starting the PubSub Server
+
+You can start the server either anonymously or with a registered local name for easier global reference.
+
+```elixir
+# Start anonymously
+{:ok, pid} = :avm_pubsub.start()
+
+# Start with a locally registered name
+{:ok, _pid} = :avm_pubsub.start(:my_pubsub_server)
+```
+
+### 2. Basic Subscription and Publishing
+
+Calling `sub/2` subscribes the calling process (`self()`) to the topic. Subscribers receive messages in the format: `{:pub, Topic, FromPid, Term}`.
+
+```elixir
+# Subscribe to a specific topic
+:avm_pubsub.sub(:my_pubsub_server, [:rooms, :lobby])
+
+# Publish a message (Returns {:ok, number_of_subscribers_reached})
+{:ok, 1} = :avm_pubsub.pub(:my_pubsub_server, [:rooms, :lobby], "Hello, lobby!")
+
+# Read the message from the process mailbox
+receive do
+  {:pub, topic, publisher_pid, payload} ->
+    IO.puts("Received payload: #{inspect(payload)} on topic: #{inspect(topic)}")
+end
+```
+
+### 3. Using Wildcards
+
+Wildcards are represented using the atoms `:+` (single-level match) and `:#` (multi-level match).
+
+```elixir
+# --- Single-Level Wildcard (:+ ) ---
+# Subscribes to any device's temperature readings
+:avm_pubsub.sub(:my_pubsub_server, [:device, :+, :temp])
+
+# Matches:
+:avm_pubsub.pub(:my_pubsub_server, [:device, :sensor_1, :temp], 22.5)
+
+# Does NOT match:
+:avm_pubsub.pub(:my_pubsub_server, [:device, :sensor_1, :humidity], 60)
+
+# --- Multi-Level Wildcard (:#) ---
+# Subscribes to EVERYTHING under the :admin topic
+:avm_pubsub.sub(:my_pubsub_server, [:admin, :#])
+
+# Matches:
+:avm_pubsub.pub(:my_pubsub_server, [:admin, :system, :cpu_warning], "CPU at 90%")
+:avm_pubsub.pub(:my_pubsub_server, [:admin, :users, :new, 123], "User created")
+```
+
+### 4. Managing Other Processes
+
+You can pass a specific Process ID (`Pid`) as the third argument to manage subscriptions for worker processes.
+
+```elixir
+# Assume worker_pid is a valid process ID
+:avm_pubsub.sub(:my_pubsub_server, [:jobs], worker_pid)
+
+# Publish a job directly to the worker
+:avm_pubsub.pub(:my_pubsub_server, [:jobs], %{task: "send_email"})
+
+# Unsubscribe the worker process
+:avm_pubsub.unsub(:my_pubsub_server, [:jobs], worker_pid)
+```
+
+> **Note on AtomVM:** When compiling Elixir code for AtomVM microcontrollers, ensure you only use standard library features explicitly supported by AtomVM's subset of the full Erlang VM.
+```s

@@ -1,5 +1,5 @@
 defmodule OledDisplay.Button do
-  @compile {:no_warn_undefined, [GPIO, :avm_pubsub]}
+  @compile {:no_warn_undefined, [:gpio, :avm_pubsub]}
 
   @gpio_pin 9
   @debounce_ms 50

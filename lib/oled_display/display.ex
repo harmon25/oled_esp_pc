@@ -1,12 +1,13 @@
 defmodule OledDisplay.Display do
-  @compile {:no_warn_undefined, [I2C, AVMPort, :avm_pubsub]}
-  alias OledDisplay.Fonts
+  @compile {:no_warn_undefined, [AVMPort, :avm_pubsub]}
+
+  require OledDisplay.Log
+  alias OledDisplay.Log
+  alias OledDisplay.DisplayState
   alias OledDisplay.Screens
 
-  @i2c_sda 3
-  @i2c_scl 4
-  @display_width 128
-  @display_height 64
+  @heap_log_interval_s 30
+
   @screens [Screens.SystemStats, Screens.Weather]
 
   @boot_tick_ms 200
@@ -27,42 +28,20 @@ defmodule OledDisplay.Display do
   end
 
   def start_link(opts) do
-    i2c = I2C.open(sda: @i2c_sda, scl: @i2c_scl, clock_speed_hz: 400_000)
+    # The display port was opened in OledDisplay.start/0 and lives for
+    # the full device uptime. We receive it here rather than reopening
+    # I2C so that supervised restarts never trigger "i2c driver install error".
+    display = Keyword.fetch!(opts, :display)
 
-    display =
-      AVMPort.open({:spawn, "display"},
-        i2c_host: i2c,
-        compatible: "solomon-systech,ssd1306",
-        width: @display_width,
-        height: @display_height,
-        invert: false
-      )
-
-    # Register all custom fonts found in assets/fonts/
-    for {name, bin} <- Fonts.all() do
-      AVMPort.call(display, {:register_font, name, bin})
-    end
-
-    # Push initial boot splash immediately so the screen isn't blank during startup
-    initial_boot_state = %{
-      tick_count: 0,
-      boot_min_ticks: div(@boot_min_ms, @boot_tick_ms),
-      wifi_status: nil,
-      wifi_ip: nil,
-      wifi_ap_ssid: nil
-    }
-
-    AVMPort.call(display, {:update, Screens.Splash.render(initial_boot_state)})
-
-    :avm_scene.start_link(__MODULE__, opts ++ [display: display],
-      display_server: {:port, display}
-    )
+    :avm_scene.start_link(__MODULE__, opts, display_server: {:port, display})
   end
 
   def init(opts) do
-    :avm_pubsub.sub(:pubsub, [:wifi_status], self())
-    :avm_pubsub.sub(:pubsub, [:screen_request], self())
-    :avm_pubsub.sub(:pubsub, [:next_screen], self())
+    :avm_pubsub.sub(:pubsub, [:wifi_wiz, :wifi_status])
+    :avm_pubsub.sub(:pubsub, [:screen_request])
+    :avm_pubsub.sub(:pubsub, [:next_screen])
+    :avm_pubsub.sub(:pubsub, [:weather_ready])
+    :avm_pubsub.sub(:pubsub, [:weather_data])
 
     tick_ref = schedule_tick(@boot_tick_ms)
 
@@ -74,12 +53,17 @@ defmodule OledDisplay.Display do
       wifi_status: nil,
       wifi_ip: nil,
       wifi_ap_ssid: nil,
+      weather_ready?: false,
+      locations_empty?: locations_empty?(),
       tick_ms: @boot_tick_ms,
       tick_ref: tick_ref,
       display: opts[:display],
       screen: nil,
       screen_state: nil,
-      rotate_ref: nil
+      rotate_ref: nil,
+      # Wall-clock second of the last heap log — used to fire every 30 s
+      # independent of which screen is active and its tick rate.
+      last_heap_log: 0
     }
 
     {:ok, state}
@@ -92,11 +76,17 @@ defmodule OledDisplay.Display do
     new_tick_count = state.tick_count + 1
     new_state = %{state | tick_count: new_tick_count}
 
+    # Leave the splash when either:
+    #   1. the minimum splash time has elapsed AND WiFi has settled
+    #      (connected or AP mode) AND we have at least one weather sample
+    #      (or no locations were configured), or
+    #   2. the absolute boot timeout has been reached.
     min_met = new_tick_count >= state.boot_min_ticks
     wifi_ready = new_state.wifi_status in [:connected, :ap_mode]
+    weather_ok = state.weather_ready? or state.locations_empty?
     timed_out = new_tick_count >= state.boot_timeout_ticks
 
-    if (min_met and wifi_ready) or timed_out do
+    if (min_met and wifi_ready and weather_ok) or timed_out do
       target = find_first_available_screen([])
       do_switch_to_running(new_state, target, [])
     else
@@ -108,28 +98,71 @@ defmodule OledDisplay.Display do
 
   # Running-mode tick
   def handle_info(:tick, %{mode: :running} = state) do
+    # Log heap every 30 s using wall-clock time so the interval is
+    # independent of whichever screen is active and its tick rate.
+    now = :erlang.system_time(:second)
+
+    state =
+      if now - state.last_heap_log >= @heap_log_interval_s do
+        heap = :erlang.system_info(:esp32_free_heap_size)
+        Log.debugf("Display", "heap=~pB screen=~p", [heap, state.screen])
+        %{state | last_heap_log: now}
+      else
+        state
+      end
+
     result = state.screen.handle_info(:tick, state.screen_state)
     handle_screen_result(result, state)
   end
 
   # Boot-mode wifi status
-  def handle_info({:pub, [:wifi_status], _from, status}, %{mode: :boot} = state) do
+  def handle_info({:pub, [:wifi_wiz, :wifi_status], _from, status}, %{mode: :boot} = state) do
+    Log.debugf("Display", "pub wifi_status status=~p mode=boot", [status])
     new_state = update_wifi_status(state, status)
     items = Screens.Splash.render(new_state)
     {:noreply, new_state, [{:push, items}]}
   end
 
   # Running-mode wifi status
-  def handle_info({:pub, [:wifi_status], _from, status}, %{mode: :running} = state) do
+  def handle_info({:pub, [:wifi_wiz, :wifi_status], _from, status}, %{mode: :running} = state) do
+    Log.debugf("Display", "pub wifi_status status=~p mode=running", [status])
     result = state.screen.handle_info({:wifi_status, status}, state.screen_state)
     handle_screen_result(result, state)
   end
 
+  # Weather ready: during boot, unblocks the splash gate. Once running
+  # it's a no-op — the active screen reads from ETS on its own tick.
+  def handle_info({:pub, [:weather_ready], _from, name}, %{mode: :boot} = state) do
+    Log.debugf("Display", "pub weather_ready name=~p boot unblocked", [name])
+    new_state = %{state | weather_ready?: true}
+    items = Screens.Splash.render(new_state)
+    {:noreply, new_state, [{:push, items}]}
+  end
+
+  def handle_info({:pub, [:weather_ready], _from, name}, state) do
+    Log.debugf("Display", "pub weather_ready name=~p ignored (running)", [name])
+    {:noreply, state}
+  end
+
+  # Weather data is forwarded to the active screen so it can re-render
+  # immediately if the update is relevant to what's on screen.
+  def handle_info({:pub, [:weather_data], _from, name}, %{mode: :running} = state) do
+    Log.debugf("Display", "pub weather_data name=~p", [name])
+    result = state.screen.handle_info({:weather_data, name}, state.screen_state)
+    handle_screen_result(result, state)
+  end
+
+  def handle_info({:pub, [:weather_data], _from, name}, state) do
+    Log.debugf("Display", "pub weather_data name=~p ignored (boot)", [name])
+    {:noreply, state}
+  end
+
   # Screen requests during boot are ignored
   def handle_info(
-        {:pub, [:screen_request], _from, {:switch, _module, _args}},
+        {:pub, [:screen_request], _from, {:switch, module, _args}},
         %{mode: :boot} = state
       ) do
+    Log.debugf("Display", "pub screen_request module=~p ignored (boot)", [module])
     {:noreply, state}
   end
 
@@ -137,23 +170,27 @@ defmodule OledDisplay.Display do
         {:pub, [:screen_request], _from, {:switch, module, args}},
         %{mode: :running} = state
       ) do
+    Log.debugf("Display", "pub screen_request module=~p", [module])
     do_switch(state, module, args)
   end
 
   # Button short press during boot is ignored
   def handle_info({:pub, [:next_screen], _from, :boot_button_pressed}, %{mode: :boot} = state) do
+    Log.debug("Display", "pub next_screen ignored (boot)")
     {:noreply, state}
   end
 
-  # Button short press during running cycles screens
+  # Button short press in running mode cycles to the next available screen
   def handle_info({:pub, [:next_screen], _from, :boot_button_pressed}, %{mode: :running} = state) do
     next = cycle_screen(state.screen)
+    Log.debugf("Display", "pub next_screen cycling -> ~p", [next])
     do_switch(state, next, [])
   end
 
   # Auto-rotation timer
   def handle_info(:rotate, %{mode: :running} = state) do
     next = cycle_screen(state.screen)
+    Log.debugf("Display", "rotate -> ~p", [next])
     do_switch(state, next, [])
   end
 
@@ -173,17 +210,23 @@ defmodule OledDisplay.Display do
 
   # ── Screen result helpers ──────────────────────────────────────
 
+  # Always cancel the previous tick timer before scheduling a new one.
+  # Without this, pubsub events (wifi_status, weather_data) that arrive
+  # while a tick is already pending would leak timers — each leaked timer
+  # fires an extra :tick, which leaks another timer, eventually flooding
+  # the mailbox and exhausting the AtomVM heap.
   defp handle_screen_result({:noreply, new_screen_state}, state) do
-    tick_ms = state.tick_ms
-    tick_ref = schedule_tick(tick_ms)
+    cancel_tick(state.tick_ref)
+    tick_ref = schedule_tick(state.tick_ms)
     {:noreply, %{state | screen_state: new_screen_state, tick_ref: tick_ref}}
   end
 
   defp handle_screen_result({:noreply, new_screen_state, opts}, state) do
+    cancel_tick(state.tick_ref)
     tick_ms = Keyword.get(opts, :tick_ms, state.tick_ms)
     tick_ref = schedule_tick(tick_ms)
     scene_opts = Keyword.delete(opts, :tick_ms)
-    new_state = %{state | screen_state: new_screen_state, tick_ref: tick_ref}
+    new_state = %{state | screen_state: new_screen_state, tick_ms: tick_ms, tick_ref: tick_ref}
 
     case scene_opts do
       [] -> {:noreply, new_state}
@@ -198,6 +241,7 @@ defmodule OledDisplay.Display do
   # ── Screen switching ───────────────────────────────────────────
 
   defp do_switch_to_running(state, module, args) do
+    Log.debugf("Display", "boot complete, switching to ~p", [module])
     cancel_tick(state.tick_ref)
 
     {screen_state, tick_ms} = module.init(args)
@@ -247,6 +291,12 @@ defmodule OledDisplay.Display do
 
   defp cancel_rotate(nil), do: :ok
   defp cancel_rotate(ref), do: Process.cancel_timer(ref)
+
+  # True when no weather locations are configured (weather screen will
+  # be skipped and the boot gate doesn't wait for a fetch).
+  defp locations_empty? do
+    DisplayState.get(:weather, :locations, []) == []
+  end
 
   defp schedule_tick(tick_ms) when tick_ms > 0 do
     Process.send_after(self(), :tick, tick_ms)
@@ -298,5 +348,9 @@ defmodule OledDisplay.Display do
 
   defp update_wifi_status(state, _other) do
     state
+  end
+
+  def wipe(display, width \\ 128, height \\ 64) do
+    AVMPort.call(display, {:update, [{:rect, 0, 0, width, height, 0x000000}]})
   end
 end

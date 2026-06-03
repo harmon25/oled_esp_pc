@@ -1,7 +1,7 @@
 %{
-  "atomvm_httpd": {:git, "https://github.com/harmon25/atomvm_httpd.git", "30ce264074ddd5fe8ac7a9ba1b482063b2dfa8e8", [branch: "improvements"]},
+  "atomvm_httpd": {:git, "https://github.com/harmon25/atomvm_httpd.git", "aae97d18a8bf419666a8858f06009f30f23ac76f", [branch: "improvements"]},
   "avm_scene": {:git, "https://github.com/atomvm/avm_scene.git", "aba9249f189d29d4564d81ba50bbe9fe28bc1d44", []},
   "exatomvm": {:git, "https://github.com/atomvm/ExAtomVM.git", "4e615cd46d1568337a2a21c56ea79776fef85612", []},
   "uf2tool": {:hex, :uf2tool, "1.1.0", "7091931234ca5a256b66ea691983867d51229798622d083f85c1ad779798a734", [:rebar3], [], "hexpm", "1a7e5ca7ef3d19c7a0b0acf3db804b3188e0980884acffa13fd57d733507b73d"},
-  "wifi_wiz": {:git, "https://github.com/harmon25/wifi_wiz.git", "0bd05f3149584aa4a6d6dfbc316730057accfcdf", [branch: "scan"]},
+  "wifi_wiz": {:git, "https://github.com/harmon25/wifi_wiz.git", "02a222aa4c5cacc56b1f3cfa427b7d4d23cb97d0", [branch: "scan"]},
 }

@@ -17,8 +17,8 @@ defmodule OledDisplay.Fonts do
 
   # Alias map: filename stem → short atom used in display lists
   @aliases %{
-    "spleen_5x8" => :spleen5x8,
-    "cozette_6x13" => :cozette
+    "spleen_5x8" => :spleen5x8
+    # "cozette_6x13" => :cozette
     # "pixel_operator_16" => :pixop16
   }
 

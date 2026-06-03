@@ -10,12 +10,13 @@ defmodule OledDisplay.Screens.SystemStats do
 
   @behaviour OledDisplay.Screen
 
+  alias OledDisplay.DisplayState
   alias OledDisplay.IconData
 
   @bg 0x000000
   @fg 0xFFFFFF
 
-  @font :cozette
+  @font :spleen5x8
   # Cozette 6×13 → advance_x=6px per char
   @char_w 6
 
@@ -30,14 +31,17 @@ defmodule OledDisplay.Screens.SystemStats do
   def init(_args) do
     {wifi_connected, wifi_ip, wifi_ap_ssid} = OledDisplay.WiFi.status()
 
+    # Counters persist in ETS across screen switches so uptime keeps
+    # ticking even while the weather screen is on. Fall back to a fresh
+    # sample when the table hasn't been populated yet (cold boot).
     state = %{
       wifi_connected: wifi_connected,
       wifi_ip: wifi_ip,
       wifi_ap_ssid: wifi_ap_ssid,
-      uptime_min: 0,
-      heap_kb: fetch_heap(),
-      min_heap_kb: fetch_min_heap(),
-      procs: fetch_procs()
+      uptime_min: DisplayState.get(:sysstats, :uptime_min, 0),
+      heap_kb: DisplayState.get(:sysstats, :heap_kb) || fetch_heap(),
+      min_heap_kb: DisplayState.get(:sysstats, :min_heap_kb) || fetch_min_heap(),
+      procs: DisplayState.get(:sysstats, :procs) || fetch_procs()
     }
 
     {state, @tick_ms}
@@ -90,6 +94,12 @@ defmodule OledDisplay.Screens.SystemStats do
         wifi_ip: wifi_ip,
         wifi_ap_ssid: wifi_ap_ssid
     }
+
+    # Persist counters to ETS so they survive screen cycling
+    DisplayState.put(:sysstats, :uptime_min, new_state.uptime_min)
+    DisplayState.put(:sysstats, :heap_kb, new_state.heap_kb)
+    DisplayState.put(:sysstats, :min_heap_kb, new_state.min_heap_kb)
+    DisplayState.put(:sysstats, :procs, new_state.procs)
 
     {:noreply, new_state, [{:push, render(new_state)}]}
   end

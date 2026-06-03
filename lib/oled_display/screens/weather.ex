@@ -1,6 +1,4 @@
 defmodule OledDisplay.Screens.Weather do
-  @compile {:no_warn_undefined, [:avm_pubsub]}
-
   @moduledoc """
   Weather screen showing real data fetched from Open-Meteo.
 

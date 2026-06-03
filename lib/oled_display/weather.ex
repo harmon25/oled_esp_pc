@@ -47,7 +47,7 @@ defmodule OledDisplay.Weather do
 
   @impl true
   def init([]) do
-    :avm_pubsub.sub(:pubsub, [:wifi_wiz, :wifi_status], self())
+    :avm_pubsub.sub(:pubsub, [:wifi_wiz, :wifi_status])
 
     # Seed ETS
     DisplayState.put(:weather, :locations, @locations)

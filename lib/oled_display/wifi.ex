@@ -3,23 +3,31 @@ defmodule OledDisplay.WiFi do
 
   use GenServer
 
+  require OledDisplay.Log
+  alias OledDisplay.Log
+  alias OledDisplay.DisplayState
+
   def start_link(opts) do
     GenServer.start_link(__MODULE__, opts, name: __MODULE__)
   end
 
-  # Returns {connected :: boolean, ip :: tuple | nil, ap_ssid :: String.t()}
+  # Returns {connected :: boolean, ip :: 4-tuple | nil, ap_ssid :: String.t() | nil}
+  #
+  # The third element is non-nil *only* when the device is genuinely in AP
+  # mode (the captive-portal AP has started).  During STA connecting / retry /
+  # disconnect the third element is nil, so callers can distinguish "no WiFi"
+  # from "AP is running".
   def status() do
     GenServer.call(__MODULE__, :status)
   end
 
   def init(_opts) do
-    IO.puts("WiFi: initializing")
-    self_pid = self()
+    Log.debug("WiFi", "initializing")
 
-    # Generate AP SSID from STA MAC so multiple devices are distinguishable
+    # Generate AP SSID from STA MAC so multiple devices are distinguishable.
+    # Stored internally; only exposed in status/0 when mode == :ap_mode.
     ap_ssid = mac_based_ssid()
-
-    :avm_pubsub.pub(:pubsub, [:wifi_status], :connecting)
+    :avm_pubsub.sub(:pubsub, [:wifi_wiz, :wifi_status])
     :avm_pubsub.sub(:pubsub, [:clear_wifi_creds], self())
 
     spawn_link(fn ->
@@ -30,52 +38,63 @@ defmodule OledDisplay.WiFi do
             psk: "atomvm123"
           ],
           sta_retry: [
-            max_duration_ms: 30_000,
+            max_duration_ms: 90_000,
             on_exhausted: :return_error
           ]
         )
 
       case result do
         {:ok, {ip, _, _}} ->
-          :io.format("WiFi: connected ~p~n", [ip])
-          send(self_pid, {:wifi_status, {:connected, ip}})
-          :avm_pubsub.pub(:pubsub, [:wifi_status], {:connected, ip})
+          Log.debugf("WiFi", "sta connected ip=~p", [ip])
 
         {:error, :sta_exhausted} ->
-          IO.puts("WiFi: STA exhausted, starting AP mode")
-          send(self_pid, {:wifi_status, {:ap_mode, ap_ssid}})
-          :avm_pubsub.pub(:pubsub, [:wifi_status], {:ap_mode, ap_ssid})
+          Log.debug("WiFi", "sta exhausted, starting AP mode")
 
           config =
-            WifiWiz.Ap.create_ap_config(ap_ssid, "atomvm123", ap_started: fn -> :ok end)
+            WifiWiz.Ap.create_ap_config(
+              ap_ssid,
+              "atomvm123",
+              [ap_started: fn -> :ok end],
+              :pubsub
+            )
 
           WifiWiz.Ap.start_ap(config)
 
         other ->
-          :io.format("WiFi: unexpected result ~p~n", [other])
+          Log.debugf("WiFi", "unexpected sta result=~p", [other])
       end
     end)
 
-    {:ok, %{connected: false, ip: nil, ap_ssid: ap_ssid}}
+    # Initial state: connecting, no IP, AP not running yet.
+    # Third status slot is nil — AP SSID only exposed once AP actually starts.
+    DisplayState.put(:wifi, :status, {false, nil, nil})
+    {:ok, %{mode: :connecting, connected: false, ip: nil, ap_ssid: ap_ssid}}
   end
 
-  def handle_info({:wifi_status, {:connected, ip}}, state) do
-    :io.format("WiFi: state -> connected, ip=~p~n", [ip])
-    {:noreply, %{state | connected: true, ip: ip}}
+  def handle_info({:pub, [:wifi_wiz, :wifi_status], _from, {:connected, {ip, _gateway}}}, state) do
+    Log.debugf("WiFi", "pub wifi_status connected ip=~p", [ip])
+    DisplayState.put(:wifi, :status, {true, ip, nil})
+    {:noreply, %{state | mode: :connected, connected: true, ip: ip}}
   end
 
-  def handle_info({:wifi_status, {:ap_mode, ap_ssid}}, state) do
-    :io.format("WiFi: state -> ap_mode, ssid=~p~n", [ap_ssid])
-    {:noreply, %{state | connected: false, ip: nil, ap_ssid: ap_ssid}}
+  def handle_info({:pub, [:wifi_wiz, :wifi_status], _from, {:ap_mode, ap_ssid}}, state) do
+    Log.debugf("WiFi", "pub wifi_status ap_mode ssid=~p", [ap_ssid])
+    # Only now do we expose the AP SSID in the status tuple.
+    DisplayState.put(:wifi, :status, {false, nil, ap_ssid})
+    {:noreply, %{state | mode: :ap_mode, connected: false, ip: nil, ap_ssid: ap_ssid}}
   end
 
-  def handle_info({:wifi_status, status}, state) do
-    :io.format("WiFi: state -> ~p~n", [status])
-    {:noreply, %{state | connected: false, ip: nil}}
+  def handle_info({:pub, [:wifi_wiz, :wifi_status], _from, status}, state) do
+    Log.debugf("WiFi", "pub wifi_status status=~p", [status])
+    # Covers :connecting, :disconnected, {:sta_retry, …}, :sta_exhausted.
+    # AP is not running — expose nil in the third slot so the display shows
+    # "Reconnecting..." instead of a bogus "AP: name".
+    DisplayState.put(:wifi, :status, {false, nil, nil})
+    {:noreply, %{state | mode: :disconnected, connected: false, ip: nil}}
   end
 
   def handle_info({:pub, [:clear_wifi_creds], _from, :boot_button_held}, state) do
-    IO.puts("WiFi: wiping credentials")
+    Log.debug("WiFi", "wiping credentials and restarting")
     WifiWiz.Config.reset()
     Process.sleep(500)
     :esp.restart()
@@ -87,7 +106,9 @@ defmodule OledDisplay.WiFi do
   end
 
   def handle_call(:status, _from, state) do
-    {:reply, {state.connected, state.ip, state.ap_ssid}, state}
+    # ap_ssid_or_nil is only non-nil when mode == :ap_mode.
+    ap_ssid_or_nil = if state.mode == :ap_mode, do: state.ap_ssid, else: nil
+    {:reply, {state.connected, state.ip, ap_ssid_or_nil}, state}
   end
 
   # ── Helpers ──────────────────────────────────────────────────────

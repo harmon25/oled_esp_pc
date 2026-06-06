@@ -20,6 +20,8 @@ defmodule OledDisplay.Screens.Splash do
     - `:wifi_status` — `:connecting`, `:connected`, `:ap_mode`, or `nil`
     - `:wifi_ip` — tuple like `{192,168,1,5}` or `nil`
     - `:wifi_ap_ssid` — string or `nil`
+    - `:weather_ready?` — boolean
+    - `:locations_empty?` — boolean
   """
   def render(state) do
     text_items(state) ++ loading_bar(state) ++ [{:rect, 0, 0, 128, 64, @bg}]
@@ -28,30 +30,38 @@ defmodule OledDisplay.Screens.Splash do
   # ── Private ──────────────────────────────────────────────────────
 
   defp text_items(state) do
-    status = status_text(state)
+    # Build a list of {y, text} rows for any non-nil status lines, then
+    # turn them into AtomGL text items. This keeps the layout flat and
+    # makes adding a new boot-status line a one-liner.
+    rows =
+      [
+        {12, "AtomVM | Elixir"},
+        {24, wifi_text(state)},
+        {34, weather_text(state)}
+      ]
+      |> Enum.reject(fn {_y, text} -> is_nil(text) end)
 
-    base = [
-      {:text, 4, 12, :spleen5x8, @fg, :transparent, "AtomVM | Elixir"}
-    ]
-
-    if status do
-      base ++ [{:text, 4, 24, :spleen5x8, @fg, :transparent, status}]
-    else
-      base
-    end
+    Enum.map(rows, fn {y, text} ->
+      {:text, 4, y, :spleen5x8, @fg, :transparent, text}
+    end)
   end
 
-  defp status_text(%{wifi_status: :connecting}), do: "Connecting WiFi..."
+  defp wifi_text(%{wifi_status: :connecting}), do: "WiFi..."
 
-  defp status_text(%{wifi_status: :connected, wifi_ip: {a, b, c, d}}) do
+  defp wifi_text(%{wifi_status: :connected, wifi_ip: {a, b, c, d}}) do
     "IP: #{a}.#{b}.#{c}.#{d}"
   end
 
-  defp status_text(%{wifi_status: :ap_mode, wifi_ap_ssid: ssid}) when is_binary(ssid) do
+  defp wifi_text(%{wifi_status: :ap_mode, wifi_ap_ssid: ssid}) when is_binary(ssid) do
     "AP: #{ssid}"
   end
 
-  defp status_text(_), do: nil
+  defp wifi_text(_), do: nil
+
+  defp weather_text(%{locations_empty?: true}), do: nil
+  defp weather_text(%{weather_ready?: true}), do: "Weather OK"
+  defp weather_text(%{wifi_status: :connected}), do: "Fetching weather..."
+  defp weather_text(_), do: nil
 
   defp loading_bar(state) do
     track = {:rect, 14, 56, 100, 3, @track}

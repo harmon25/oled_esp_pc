@@ -1,0 +1,233 @@
+defmodule OledDisplay.Weather do
+  @compile {:no_warn_undefined, [:avm_pubsub, :atomvm]}
+
+  require OledDisplay.Log
+  alias OledDisplay.Log
+
+  @moduledoc """
+  GenServer that fetches weather from wttr.in and caches it in ETS.
+
+  - Seeds ETS on init with configured locations and :pending entries.
+  - Subscribes to WiFi status and starts fetching on :connected.
+  - Publishes {:weather_data, name} after every successful fetch.
+  - Publishes {:weather_ready, name} on the *first* success per location.
+
+  Fetches locations **sequentially** in a spawned task — one TCP socket
+  at a time — to keep peak heap usage on the ESP32-C3 small. See
+  `OledDisplay.Weather.Client` for the wire protocol.
+
+  ## Timer generation tokens
+
+  `Process.cancel_timer/1` is a no-op on AtomVM's timer_manager
+  implementation (the ref returned by `send_after` is disconnected from
+  the internal timer process).  Instead of relying on cancellation, we
+  tag each scheduled message with an incrementing `fetch_gen` counter.
+  When a `:fetch_all` fires, we act only if its gen matches
+  `state.fetch_gen`; stale firings (e.g. from a timer scheduled before
+  a WiFi disconnect) are silently dropped.
+  """
+
+  use GenServer
+
+  alias OledDisplay.DisplayState
+  alias OledDisplay.Weather.Client
+
+  @default_fetch_interval_ms 900_000
+
+  @weather_cfg Application.compile_env(:oled_display, :weather, [])
+  @locations Keyword.get(@weather_cfg, :locations, [])
+  @units Keyword.get(@weather_cfg, :units, :celsius)
+  @fetch_interval_ms Keyword.get(@weather_cfg, :fetch_interval_ms, @default_fetch_interval_ms)
+
+  # ── Lifecycle ───────────────────────────────────────────────────
+
+  def start_link(_opts) do
+    GenServer.start_link(__MODULE__, [], name: __MODULE__)
+  end
+
+  def child_spec(opts) do
+    %{
+      id: __MODULE__,
+      start: {__MODULE__, :start_link, [opts]},
+      type: :worker,
+      restart: :permanent,
+      shutdown: 5000
+    }
+  end
+
+  @impl true
+  def init([]) do
+    :avm_pubsub.sub(:pubsub, [:wifi_wiz, :wifi_status])
+
+    # Seed ETS
+    DisplayState.put(:weather, :locations, @locations)
+    DisplayState.put(:weather, :units, @units)
+
+    for loc <- @locations do
+      DisplayState.put(:weather, {:loc, loc.name}, %{
+        status: :pending,
+        temp: 0.0,
+        humidity: 0,
+        icon: :cloud,
+        is_day: 1,
+        fetched_at: 0
+      })
+    end
+
+    {wifi_connected, _ip, _ap_ssid} = OledDisplay.WiFi.status()
+
+    state = %{
+      locations: @locations,
+      units: @units,
+      interval: @fetch_interval_ms,
+      wifi_connected: wifi_connected,
+      fetch_gen: 0,
+      # Counts how many {:fetched, ...} messages are still expected from
+      # the current in-flight worker.  Used to prevent overlapping spawns.
+      fetch_count_remaining: 0,
+      ready_set: MapSet.new()
+    }
+
+    # If WiFi is already up and we have something to fetch, kick off the
+    # first request after a short delay so a crash-loop doesn't hammer
+    # the network. Otherwise wait for :wifi_status -> :connected.
+    if wifi_connected and @locations != [] do
+      Log.debug("Weather", "wifi already up, deferring first fetch 3 s")
+      {gen, state} = next_fetch_gen(state)
+      :erlang.start_timer(3_000, self(), {:fetch_all, gen})
+      {:ok, state}
+    else
+      {:ok, state}
+    end
+  end
+
+  # ── Public API ──────────────────────────────────────────────────
+
+  def force_refresh do
+    GenServer.cast(__MODULE__, :fetch_all)
+  end
+
+  # ── GenServer callbacks ──────────────────────────────────────────
+
+  @impl true
+  def handle_cast(:fetch_all, state) do
+    new_state = do_fetch_all(state)
+    {:noreply, new_state}
+  end
+
+  @impl true
+  def handle_info({:pub, [:wifi_wiz, :wifi_status], _from, {:connected, _ip}}, state) do
+    Log.debug("Weather", "pub wifi_status connected, starting fetches")
+    new_state = %{state | wifi_connected: true}
+    {:noreply, do_fetch_all(new_state)}
+  end
+
+  def handle_info({:pub, [:wifi_wiz, :wifi_status], _from, {:ap_mode, _ssid}}, state) do
+    Log.debug("Weather", "pub wifi_status ap_mode, pausing fetches")
+    # Bump fetch_gen to invalidate any pending {:fetch_all, old_gen} timers.
+    {_gen, new_state} = next_fetch_gen(state)
+    {:noreply, %{new_state | wifi_connected: false}}
+  end
+
+  def handle_info({:pub, [:wifi_wiz, :wifi_status], _from, status}, state) do
+    Log.debugf("Weather", "pub wifi_status status=~p, pausing fetches", [status])
+    # Bump fetch_gen to invalidate any pending {:fetch_all, old_gen} timers.
+    {_gen, new_state} = next_fetch_gen(state)
+    {:noreply, %{new_state | wifi_connected: false}}
+  end
+
+  # Scheduled fetch timer — acts only for the current generation.
+  def handle_info({:timeout, _ref, {:fetch_all, gen}}, %{fetch_gen: gen} = state) do
+    new_state =
+      if state.wifi_connected do
+        do_fetch_all(state)
+      else
+        state
+      end
+
+    {:noreply, new_state}
+  end
+
+  # Stale fetch timer — generation mismatch or fired after WiFi disconnect.
+  def handle_info({:timeout, _ref, {:fetch_all, _}}, state) do
+    {:noreply, state}
+  end
+
+  def handle_info({:fetched, name, {:ok, payload}}, state) do
+    Log.debugf("Weather", "fetched ~s ok", [name])
+    DisplayState.put(:weather, {:loc, name}, Map.put(payload, :status, :ok))
+    :avm_pubsub.pub(:pubsub, [:weather_data], name)
+
+    new_ready_set =
+      if MapSet.member?(state.ready_set, name) do
+        state.ready_set
+      else
+        Log.debugf("Weather", "first fetch for ~s, publishing weather_ready", [name])
+        :avm_pubsub.pub(:pubsub, [:weather_ready], name)
+        MapSet.put(state.ready_set, name)
+      end
+
+    new_count = max(0, state.fetch_count_remaining - 1)
+    {:noreply, %{state | ready_set: new_ready_set, fetch_count_remaining: new_count}}
+  end
+
+  def handle_info({:fetched, name, {:error, reason}}, state) do
+    Log.debugf("Weather", "fetched ~s error=~p", [name, reason])
+    existing = DisplayState.get(:weather, {:loc, name}, %{}) |> Map.put(:status, :error)
+    DisplayState.put(:weather, {:loc, name}, existing)
+    new_count = max(0, state.fetch_count_remaining - 1)
+    {:noreply, %{state | fetch_count_remaining: new_count}}
+  end
+
+  def handle_info(_msg, state) do
+    {:noreply, state}
+  end
+
+  # ── Internal ────────────────────────────────────────────────────
+
+  defp do_fetch_all(state) do
+    # Guard: if a previous worker is still sending {:fetched, ...} messages,
+    # skip this spawn.  Prevents multiple TCP sockets from being open
+    # concurrently (e.g. timer tick racing a WiFi-reconnect event).
+    if state.fetch_count_remaining > 0 do
+      Log.debug("Weather", "fetch already in-flight, skipping duplicate spawn")
+      state
+    else
+      # Spawn a worker that walks the location list one at a time and
+      # mails each result back to us. Sequential fetching keeps only a
+      # single TCP socket open at a time, which matters on the ESP32-C3.
+      owner = self()
+
+      pid =
+        spawn(fn ->
+          for loc <- state.locations do
+            result = Client.fetch(%{lat: loc.lat, lon: loc.lon, units: state.units})
+            send(owner, {:fetched, loc.name, result})
+          end
+        end)
+
+      Log.debugf("Weather", "spawned fetch pid=~p locs=~p", [pid, length(state.locations)])
+
+      # Schedule next periodic fetch via start_timer so cancel_timer actually
+      # works (send_after returns a disconnected ref; start_timer registers it).
+      interval = state.interval + jitter(state.interval)
+      {gen, state1} = next_fetch_gen(state)
+      :erlang.start_timer(interval, self(), {:fetch_all, gen})
+      %{state1 | fetch_count_remaining: length(state.locations)}
+    end
+  end
+
+  # Returns {new_gen, new_state} — bumping the generation invalidates all
+  # previously scheduled {:fetch_all, old_gen} messages.
+  defp next_fetch_gen(state) do
+    gen = state.fetch_gen + 1
+    {gen, %{state | fetch_gen: gen}}
+  end
+
+  defp jitter(interval) do
+    # AtomVM provides :atomvm.random/0 (32-bit unsigned integer).
+    # Scale it to 0–10% of the runtime interval (not the compile-time default).
+    max_jitter = div(interval, 10)
+    rem(:atomvm.random(), max_jitter)
+  end
+end

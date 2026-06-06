@@ -15,6 +15,16 @@ defmodule OledDisplay.Weather do
   Fetches locations **sequentially** in a spawned task — one TCP socket
   at a time — to keep peak heap usage on the ESP32-C3 small. See
   `OledDisplay.Weather.Client` for the wire protocol.
+
+  ## Timer generation tokens
+
+  `Process.cancel_timer/1` is a no-op on AtomVM's timer_manager
+  implementation (the ref returned by `send_after` is disconnected from
+  the internal timer process).  Instead of relying on cancellation, we
+  tag each scheduled message with an incrementing `fetch_gen` counter.
+  When a `:fetch_all` fires, we act only if its gen matches
+  `state.fetch_gen`; stale firings (e.g. from a timer scheduled before
+  a WiFi disconnect) are silently dropped.
   """
 
   use GenServer
@@ -71,7 +81,7 @@ defmodule OledDisplay.Weather do
       units: @units,
       interval: @fetch_interval_ms,
       wifi_connected: wifi_connected,
-      fetch_timer: nil,
+      fetch_gen: 0,
       # Counts how many {:fetched, ...} messages are still expected from
       # the current in-flight worker.  Used to prevent overlapping spawns.
       fetch_count_remaining: 0,
@@ -83,8 +93,9 @@ defmodule OledDisplay.Weather do
     # the network. Otherwise wait for :wifi_status -> :connected.
     if wifi_connected and @locations != [] do
       Log.debug("Weather", "wifi already up, deferring first fetch 3 s")
-      timer_ref = Process.send_after(self(), :fetch_all, 3_000)
-      {:ok, %{state | fetch_timer: timer_ref}}
+      {gen, state} = next_fetch_gen(state)
+      :erlang.start_timer(3_000, self(), {:fetch_all, gen})
+      {:ok, state}
     else
       {:ok, state}
     end
@@ -113,23 +124,33 @@ defmodule OledDisplay.Weather do
 
   def handle_info({:pub, [:wifi_wiz, :wifi_status], _from, {:ap_mode, _ssid}}, state) do
     Log.debug("Weather", "pub wifi_status ap_mode, pausing fetches")
-    {:noreply, cancel_timer(%{state | wifi_connected: false})}
+    # Bump fetch_gen to invalidate any pending {:fetch_all, old_gen} timers.
+    {_gen, new_state} = next_fetch_gen(state)
+    {:noreply, %{new_state | wifi_connected: false}}
   end
 
   def handle_info({:pub, [:wifi_wiz, :wifi_status], _from, status}, state) do
     Log.debugf("Weather", "pub wifi_status status=~p, pausing fetches", [status])
-    {:noreply, cancel_timer(%{state | wifi_connected: false})}
+    # Bump fetch_gen to invalidate any pending {:fetch_all, old_gen} timers.
+    {_gen, new_state} = next_fetch_gen(state)
+    {:noreply, %{new_state | wifi_connected: false}}
   end
 
-  def handle_info(:fetch_all, state) do
+  # Scheduled fetch timer — acts only for the current generation.
+  def handle_info({:timeout, _ref, {:fetch_all, gen}}, %{fetch_gen: gen} = state) do
     new_state =
       if state.wifi_connected do
         do_fetch_all(state)
       else
-        cancel_timer(state)
+        state
       end
 
     {:noreply, new_state}
+  end
+
+  # Stale fetch timer — generation mismatch or fired after WiFi disconnect.
+  def handle_info({:timeout, _ref, {:fetch_all, _}}, state) do
+    {:noreply, state}
   end
 
   def handle_info({:fetched, name, {:ok, payload}}, state) do
@@ -187,10 +208,20 @@ defmodule OledDisplay.Weather do
 
       Log.debugf("Weather", "spawned fetch pid=~p locs=~p", [pid, length(state.locations)])
 
-      state1 = cancel_timer(state)
-      timer_ref = Process.send_after(self(), :fetch_all, state1.interval + jitter(state1.interval))
-      %{state1 | fetch_timer: timer_ref, fetch_count_remaining: length(state.locations)}
+      # Schedule next periodic fetch via start_timer so cancel_timer actually
+      # works (send_after returns a disconnected ref; start_timer registers it).
+      interval = state.interval + jitter(state.interval)
+      {gen, state1} = next_fetch_gen(state)
+      :erlang.start_timer(interval, self(), {:fetch_all, gen})
+      %{state1 | fetch_count_remaining: length(state.locations)}
     end
+  end
+
+  # Returns {new_gen, new_state} — bumping the generation invalidates all
+  # previously scheduled {:fetch_all, old_gen} messages.
+  defp next_fetch_gen(state) do
+    gen = state.fetch_gen + 1
+    {gen, %{state | fetch_gen: gen}}
   end
 
   defp jitter(interval) do
@@ -198,13 +229,5 @@ defmodule OledDisplay.Weather do
     # Scale it to 0–10% of the runtime interval (not the compile-time default).
     max_jitter = div(interval, 10)
     rem(:atomvm.random(), max_jitter)
-  end
-
-  defp cancel_timer(state) do
-    if state.fetch_timer do
-      Process.cancel_timer(state.fetch_timer)
-    end
-
-    %{state | fetch_timer: nil}
   end
 end

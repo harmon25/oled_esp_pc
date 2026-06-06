@@ -31,14 +31,27 @@ defmodule OledDisplay.Screens.SystemStats do
   def init(_args) do
     {wifi_connected, wifi_ip, wifi_ap_ssid} = OledDisplay.WiFi.status()
 
-    # Counters persist in ETS across screen switches so uptime keeps
-    # ticking even while the weather screen is on. Fall back to a fresh
-    # sample when the table hasn't been populated yet (cold boot).
+    # Seed the monotonic boot reference on first activation.
+    # Uptime is computed fresh on every render as:
+    #   div(monotonic_now - boot_ms, 60_000)
+    # This is immune to SNTP clock jumps and works correctly even when
+    # the screen is off-rotation (the tick may not fire every 60 s).
+    boot_ms =
+      case DisplayState.get(:sysstats, :boot_monotonic_ms) do
+        nil ->
+          t = :erlang.monotonic_time(:millisecond)
+          DisplayState.put(:sysstats, :boot_monotonic_ms, t)
+          t
+
+        t ->
+          t
+      end
+
     state = %{
       wifi_connected: wifi_connected,
       wifi_ip: wifi_ip,
       wifi_ap_ssid: wifi_ap_ssid,
-      uptime_min: DisplayState.get(:sysstats, :uptime_min, 0),
+      boot_ms: boot_ms,
       heap_kb: DisplayState.get(:sysstats, :heap_kb) || fetch_heap(),
       min_heap_kb: DisplayState.get(:sysstats, :min_heap_kb) || fetch_min_heap(),
       procs: DisplayState.get(:sysstats, :procs) || fetch_procs()
@@ -54,7 +67,7 @@ defmodule OledDisplay.Screens.SystemStats do
         do: IconData.get(:wifi1),
         else: IconData.get(:wifi_off)
 
-    uptime = format_uptime(state.uptime_min)
+    uptime = format_uptime(div(:erlang.monotonic_time(:millisecond) - state.boot_ms, 60_000))
     heap = format_heap(state.heap_kb)
     min_heap = format_min_heap(state.min_heap_kb)
     procs = format_procs(state.procs)
@@ -86,8 +99,7 @@ defmodule OledDisplay.Screens.SystemStats do
 
     new_state = %{
       state
-      | uptime_min: state.uptime_min + 1,
-        heap_kb: fetch_heap(),
+      | heap_kb: fetch_heap(),
         min_heap_kb: fetch_min_heap(),
         procs: fetch_procs(),
         wifi_connected: wifi_connected,
@@ -95,8 +107,7 @@ defmodule OledDisplay.Screens.SystemStats do
         wifi_ap_ssid: wifi_ap_ssid
     }
 
-    # Persist counters to ETS so they survive screen cycling
-    DisplayState.put(:sysstats, :uptime_min, new_state.uptime_min)
+    # Persist heap/proc counters to ETS so they can seed a fresh init
     DisplayState.put(:sysstats, :heap_kb, new_state.heap_kb)
     DisplayState.put(:sysstats, :min_heap_kb, new_state.min_heap_kb)
     DisplayState.put(:sysstats, :procs, new_state.procs)
@@ -105,7 +116,8 @@ defmodule OledDisplay.Screens.SystemStats do
   end
 
   def handle_info({:wifi_status, {:connected, ip}}, state) do
-    new_state = %{state | wifi_connected: true, wifi_ip: ip}
+    # Clear any stale AP SSID — the device is connected to STA, not AP mode.
+    new_state = %{state | wifi_connected: true, wifi_ip: ip, wifi_ap_ssid: nil}
     {:noreply, new_state, [{:push, render(new_state)}]}
   end
 
@@ -115,7 +127,8 @@ defmodule OledDisplay.Screens.SystemStats do
   end
 
   def handle_info({:wifi_status, _status}, state) do
-    new_state = %{state | wifi_connected: false, wifi_ip: nil}
+    # Disconnected / connecting / retry — clear both IP and AP SSID.
+    new_state = %{state | wifi_connected: false, wifi_ip: nil, wifi_ap_ssid: nil}
     {:noreply, new_state, [{:push, render(new_state)}]}
   end
 
@@ -168,6 +181,6 @@ defmodule OledDisplay.Screens.SystemStats do
 
   defp format_ip(true, nil, _), do: "..."
   defp format_ip(true, {a, b, c, d}, _), do: "#{a}.#{b}.#{c}.#{d}"
-  defp format_ip(false, _, nil), do: "No WiFi"
+  defp format_ip(false, _, nil), do: "Reconnecting..."
   defp format_ip(false, _, ap_ssid) when is_binary(ap_ssid), do: "AP: #{ap_ssid}"
 end

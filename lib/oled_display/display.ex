@@ -6,8 +6,6 @@ defmodule OledDisplay.Display do
   alias OledDisplay.DisplayState
   alias OledDisplay.Screens
 
-  @heap_log_interval_s 30
-
   @screens [Screens.SystemStats, Screens.Weather]
 
   @boot_tick_ms 200
@@ -43,8 +41,13 @@ defmodule OledDisplay.Display do
     :avm_pubsub.sub(:pubsub, [:weather_ready])
     :avm_pubsub.sub(:pubsub, [:weather_data])
 
-    tick_ref = schedule_tick(@boot_tick_ms)
-
+    # Generation counters replace timer refs.  Each bump logically
+    # "cancels" all previously scheduled timers for that slot: when a
+    # stale timer fires it delivers {:tick, old_gen} / {:rotate, old_gen}
+    # which no longer matches state.tick_gen / state.rotate_gen, so the
+    # handler ignores it and does NOT reschedule.  This bounds the
+    # live-timer population regardless of cancel_timer being a no-op on
+    # AtomVM's timer_manager implementation.
     state = %{
       mode: :boot,
       tick_count: 0,
@@ -56,23 +59,21 @@ defmodule OledDisplay.Display do
       weather_ready?: false,
       locations_empty?: locations_empty?(),
       tick_ms: @boot_tick_ms,
-      tick_ref: tick_ref,
+      tick_gen: 0,
+      rotate_gen: 0,
       display: opts[:display],
       screen: nil,
-      screen_state: nil,
-      rotate_ref: nil,
-      # Wall-clock second of the last heap log — used to fire every 30 s
-      # independent of which screen is active and its tick rate.
-      last_heap_log: 0
+      screen_state: nil
     }
 
+    state = bump_tick(state)
     {:ok, state}
   end
 
   # ── Event handlers ───────────────────────────────────────────────
 
-  # Boot-mode tick
-  def handle_info(:tick, %{mode: :boot} = state) do
+  # Boot-mode tick (matches current generation only)
+  def handle_info({:timeout, _ref, {:tick, gen}}, %{mode: :boot, tick_gen: gen} = state) do
     new_tick_count = state.tick_count + 1
     new_state = %{state | tick_count: new_tick_count}
 
@@ -91,29 +92,21 @@ defmodule OledDisplay.Display do
       do_switch_to_running(new_state, target, [])
     else
       items = Screens.Splash.render(new_state)
-      tick_ref = schedule_tick(state.tick_ms)
-      {:noreply, %{new_state | tick_ref: tick_ref}, [{:push, items}]}
+      new_state = bump_tick(new_state)
+      {:noreply, new_state, [{:push, items}]}
     end
   end
 
-  # Running-mode tick
-  def handle_info(:tick, %{mode: :running} = state) do
-    # Log heap every 30 s using wall-clock time so the interval is
-    # independent of whichever screen is active and its tick rate.
-    now = :erlang.system_time(:second)
-
-    state =
-      if now - state.last_heap_log >= @heap_log_interval_s do
-        heap = :erlang.system_info(:esp32_free_heap_size)
-        procs = :erlang.system_info(:process_count)
-        Log.debugf("Display", "heap=~pB procs=~p screen=~p", [heap, procs, state.screen])
-        %{state | last_heap_log: now}
-      else
-        state
-      end
-
+  # Running-mode tick (matches current generation only)
+  def handle_info({:timeout, _ref, {:tick, gen}}, %{mode: :running, tick_gen: gen} = state) do
     result = state.screen.handle_info(:tick, state.screen_state)
-    handle_screen_result(result, state)
+    handle_tick_result(result, state)
+  end
+
+  # Stale tick — generation mismatch, or fired after cancel arrived too late.
+  # Do NOT reschedule; the timer process already exited after delivering this.
+  def handle_info({:timeout, _ref, {:tick, _}}, state) do
+    {:noreply, state}
   end
 
   # Boot-mode wifi status
@@ -124,14 +117,14 @@ defmodule OledDisplay.Display do
     {:noreply, new_state, [{:push, items}]}
   end
 
-  # Running-mode wifi status
+  # Running-mode wifi status — re-render without rescheduling the tick
   def handle_info({:pub, [:wifi_wiz, :wifi_status], _from, status}, %{mode: :running} = state) do
     Log.debugf("Display", "pub wifi_status status=~p mode=running", [status])
     # Normalize the raw WifiWiz payload before forwarding so screens
     # always see {:connected, ip_4tuple} rather than {:connected, {ip, gateway}}.
     normalized = normalize_wifi_status(status)
     result = state.screen.handle_info({:wifi_status, normalized}, state.screen_state)
-    handle_screen_result(result, state)
+    handle_event_result(result, state)
   end
 
   # Weather ready: during boot, unblocks the splash gate. Once running
@@ -150,10 +143,11 @@ defmodule OledDisplay.Display do
 
   # Weather data is forwarded to the active screen so it can re-render
   # immediately if the update is relevant to what's on screen.
+  # Re-rendered without rescheduling the tick to avoid minting extra timers.
   def handle_info({:pub, [:weather_data], _from, name}, %{mode: :running} = state) do
     Log.debugf("Display", "pub weather_data name=~p", [name])
     result = state.screen.handle_info({:weather_data, name}, state.screen_state)
-    handle_screen_result(result, state)
+    handle_event_result(result, state)
   end
 
   def handle_info({:pub, [:weather_data], _from, name}, state) do
@@ -191,21 +185,23 @@ defmodule OledDisplay.Display do
     do_switch(state, next, [])
   end
 
-  # Auto-rotation timer
-  def handle_info(:rotate, %{mode: :running} = state) do
+  # Auto-rotation timer (matches current generation only)
+  def handle_info({:timeout, _ref, {:rotate, gen}}, %{mode: :running, rotate_gen: gen} = state) do
     next = cycle_screen(state.screen)
     Log.debugf("Display", "rotate -> ~p", [next])
     do_switch(state, next, [])
   end
 
-  def handle_info(:rotate, state) do
+  # Stale rotate — ignore.
+  def handle_info({:timeout, _ref, {:rotate, _}}, state) do
     {:noreply, state}
   end
 
-  # Catch-all for running mode
+  # Catch-all for running mode — out-of-band messages forwarded to screen
+  # without rescheduling the tick.
   def handle_info(msg, %{mode: :running} = state) do
     result = state.screen.handle_info(msg, state.screen_state)
-    handle_screen_result(result, state)
+    handle_event_result(result, state)
   end
 
   def handle_info(_msg, state) do
@@ -214,23 +210,17 @@ defmodule OledDisplay.Display do
 
   # ── Screen result helpers ──────────────────────────────────────
 
-  # Always cancel the previous tick timer before scheduling a new one.
-  # Without this, pubsub events (wifi_status, weather_data) that arrive
-  # while a tick is already pending would leak timers — each leaked timer
-  # fires an extra :tick, which leaks another timer, eventually flooding
-  # the mailbox and exhausting the AtomVM heap.
-  defp handle_screen_result({:noreply, new_screen_state}, state) do
-    cancel_tick(state.tick_ref)
-    tick_ref = schedule_tick(state.tick_ms)
-    {:noreply, %{state | screen_state: new_screen_state, tick_ref: tick_ref}}
+  # handle_tick_result: called only from the `:tick` path.
+  # Bumps tick_gen to schedule the next tick at the (possibly new) rate.
+  defp handle_tick_result({:noreply, new_screen_state}, state) do
+    new_state = bump_tick(%{state | screen_state: new_screen_state})
+    {:noreply, new_state}
   end
 
-  defp handle_screen_result({:noreply, new_screen_state, opts}, state) do
-    cancel_tick(state.tick_ref)
+  defp handle_tick_result({:noreply, new_screen_state, opts}, state) do
     tick_ms = Keyword.get(opts, :tick_ms, state.tick_ms)
-    tick_ref = schedule_tick(tick_ms)
     scene_opts = Keyword.delete(opts, :tick_ms)
-    new_state = %{state | screen_state: new_screen_state, tick_ms: tick_ms, tick_ref: tick_ref}
+    new_state = bump_tick(%{state | screen_state: new_screen_state, tick_ms: tick_ms})
 
     case scene_opts do
       [] -> {:noreply, new_state}
@@ -238,7 +228,31 @@ defmodule OledDisplay.Display do
     end
   end
 
-  defp handle_screen_result({:switch, module, args}, state) do
+  defp handle_tick_result({:switch, module, args}, state) do
+    do_switch(state, module, args)
+  end
+
+  # handle_event_result: called for out-of-band events (wifi_status, weather_data,
+  # button, unknown messages).  Updates screen_state and optionally pushes a new
+  # frame, but does NOT reschedule the tick — the already-pending {:tick, gen}
+  # continues on its current cadence.  This prevents each pubsub event from
+  # minting a new orphaned timer process.
+  defp handle_event_result({:noreply, new_screen_state}, state) do
+    {:noreply, %{state | screen_state: new_screen_state}}
+  end
+
+  defp handle_event_result({:noreply, new_screen_state, opts}, state) do
+    tick_ms = Keyword.get(opts, :tick_ms, state.tick_ms)
+    scene_opts = Keyword.delete(opts, :tick_ms)
+    new_state = %{state | screen_state: new_screen_state, tick_ms: tick_ms}
+
+    case scene_opts do
+      [] -> {:noreply, new_state}
+      _ -> {:noreply, new_state, scene_opts}
+    end
+  end
+
+  defp handle_event_result({:switch, module, args}, state) do
     do_switch(state, module, args)
   end
 
@@ -246,94 +260,80 @@ defmodule OledDisplay.Display do
 
   defp do_switch_to_running(state, module, args) do
     Log.debugf("Display", "boot complete, switching to ~p", [module])
-    cancel_tick(state.tick_ref)
 
     {screen_state, tick_ms} = module.init(args)
-    tick_ref = schedule_tick(tick_ms)
-    rotate_ref = schedule_rotate(@rotate_ms)
-
     items = module.render(screen_state)
 
-    new_state = %{
-      state
-      | mode: :running,
-        screen: module,
-        screen_state: screen_state,
-        tick_ms: tick_ms,
-        tick_ref: tick_ref,
-        rotate_ref: rotate_ref,
-        tick_count: 0
-    }
+    new_state =
+      %{
+        state
+        | mode: :running,
+          screen: module,
+          screen_state: screen_state,
+          tick_ms: tick_ms,
+          tick_count: 0
+      }
+      |> bump_tick()
+      |> bump_rotate()
 
     {:noreply, new_state, [{:push, items}]}
   end
 
   defp do_switch(state, module, args) do
-    cancel_tick(state.tick_ref)
-    cancel_rotate(state.rotate_ref)
+    heap = :erlang.system_info(:esp32_free_heap_size)
+    procs = :erlang.system_info(:process_count)
+    Log.debugf("Display", "heap=~pB procs=~p screen=~p", [heap, procs, module])
 
     {screen_state, tick_ms} = module.init(args)
-    tick_ref = schedule_tick(tick_ms)
-    rotate_ref = schedule_rotate(@rotate_ms)
-
     items = module.render(screen_state)
 
-    new_state = %{
-      state
-      | screen: module,
-        screen_state: screen_state,
-        tick_ms: tick_ms,
-        tick_ref: tick_ref,
-        rotate_ref: rotate_ref
-    }
+    new_state =
+      %{
+        state
+        | screen: module,
+          screen_state: screen_state,
+          tick_ms: tick_ms
+      }
+      |> bump_tick()
+      |> bump_rotate()
 
     {:noreply, new_state, [{:push, items}]}
   end
 
-  defp cancel_tick(nil), do: :ok
+  # ── Timer generation helpers ──────────────────────────────────
 
-  defp cancel_tick(ref) do
-    Process.cancel_timer(ref)
-    # Flush any already-delivered :tick from the mailbox.  cancel_timer/1
-    # cannot remove messages that already arrived; without this flush a stale
-    # :tick would be dequeued later and trigger an extra render cycle,
-    # allocating icon binaries and leaking heap on every occurrence.
-    receive do
-      :tick -> :ok
-    after
-      0 -> :ok
-    end
+  # Increments tick_gen and schedules a new {:tick, new_gen} via start_timer.
+  #
+  # Using erlang:start_timer/3 (not send_after/3) because start_timer registers
+  # the ref in timer_manager, so erlang:cancel_timer/1 can actually kill the
+  # spawned process immediately.  send_after returns a disconnected make_ref()
+  # that cancel_timer cannot find — cancellation is a no-op for send_after.
+  #
+  # Generation tokens remain as a second layer: if a {:timeout, ref, {:tick, gen}}
+  # arrives after a bump (race between fire and cancel), the stale-gen catch-all
+  # discards it without rescheduling.
+  defp bump_tick(%{tick_ms: tick_ms} = state) when tick_ms > 0 do
+    gen = state.tick_gen + 1
+    :erlang.start_timer(tick_ms, self(), {:tick, gen})
+    %{state | tick_gen: gen}
   end
 
-  defp cancel_rotate(nil), do: :ok
+  defp bump_tick(state), do: state
 
-  defp cancel_rotate(ref) do
-    Process.cancel_timer(ref)
-    # Same flush for :rotate to prevent spurious extra screen switches.
-    receive do
-      :rotate -> :ok
-    after
-      0 -> :ok
-    end
+  # Increments rotate_gen and schedules a new {:rotate, new_gen} via start_timer.
+  defp bump_rotate(state) do
+    gen = state.rotate_gen + 1
+    :erlang.start_timer(@rotate_ms, self(), {:rotate, gen})
+    %{state | rotate_gen: gen}
   end
+
+  # ── Screen discovery ──────────────────────────────────────────
 
   # True when no weather locations are configured (weather screen will
   # be skipped and the boot gate doesn't wait for a fetch).
   defp locations_empty? do
     DisplayState.get(:weather, :locations, []) == []
   end
-
-  defp schedule_tick(tick_ms) when tick_ms > 0 do
-    Process.send_after(self(), :tick, tick_ms)
-  end
-
-  defp schedule_tick(_tick_ms), do: nil
-
-  defp schedule_rotate(ms) when ms > 0 do
-    Process.send_after(self(), :rotate, ms)
-  end
-
-  defp schedule_rotate(_ms), do: nil
 
   defp cycle_screen(current) do
     case Enum.find_index(@screens, &(&1 == current)) do

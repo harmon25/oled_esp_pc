@@ -29,11 +29,60 @@ import math
 import freetype
 
 
-CHARS = range(0x20, 0x7F)  # printable ASCII
+CHARS_FULL = (
+    list(range(0x0020, 0x007F)) +  # 95 ASCII glyphs
+    [0x00B0]                        # ° degree sign
+)
+
+# Minimal set for large hero text: temperature ("22°C", "22°F", "--°C")
+# and humidity ("65%", "--%").  Only 16 glyphs needed instead of 96,
+# saving ~13 KB of RAM for the 12×24 strike.
+#   U+0020 space, U+0025 %, U+002D hyphen, U+0030-0039 digits,
+#   U+0043 C, U+0046 F, U+00B0 degree
+CHARS_NUMERIC = (
+    [0x0020, 0x0025, 0x002D] +      # space  %  -
+    list(range(0x0030, 0x003A)) +   # 0-9
+    [0x0043, 0x0046, 0x00B0]        # C  F  °
+)
+
+CHARS = CHARS_FULL  # default; override via CLI (see __main__)
 
 
 def align4(n):
     return ((n + 3) // 4) * 4
+
+
+def group_intervals(chars):
+    """Group sorted codepoints into contiguous intervals.
+    
+    Returns a list of (start, end, offset) tuples where:
+      - start, end: inclusive range of codepoints
+      - offset: index into the glyph array for this interval's first glyph
+    """
+    if not chars:
+        return []
+    
+    chars = sorted(set(chars))  # deduplicate and sort
+    intervals = []
+    start = chars[0]
+    end = start
+    offset = 0
+    
+    for i, cp in enumerate(chars):
+        if i == 0:
+            continue
+        
+        # If gap > 1, close current interval and start new one
+        if cp > end + 1:
+            intervals.append((start, end, offset))
+            start = cp
+            offset = i
+        
+        end = cp
+    
+    # Close final interval
+    intervals.append((start, end, offset))
+    return intervals
 
 
 def make_chunk(name: bytes, data: bytes) -> bytes:
@@ -100,7 +149,9 @@ def render_glyph_1bit(face):
     return bytes(buf), width, height, advance_x, left, top
 
 
-def convert(font_path, pixel_size, output_path):
+def convert(font_path, pixel_size, output_path, chars=None):
+    if chars is None:
+        chars = CHARS
     face = freetype.Face(font_path)
 
     if is_bitmap_font(face):
@@ -128,7 +179,10 @@ def convert(font_path, pixel_size, output_path):
         freetype.FT_LOAD_TARGET_MONO
     )
 
-    for cp in CHARS:
+    # Sort and deduplicate
+    chars_sorted = sorted(set(chars))
+
+    for cp in chars_sorted:
         face.load_char(cp, load_flags)
         pix, w, h, adv_x, left, top = render_glyph_1bit(face)
 
@@ -138,21 +192,26 @@ def convert(font_path, pixel_size, output_path):
         # EpdGlyph (packed, 18 bytes): u16 w, h, adv_x; i16 left, top; u32 comp_size, data_offset
         glyph_structs.extend(struct.pack("<HHHhhII", w, h, adv_x, left, top, 0, data_offset))
 
+    # Group codepoints into contiguous intervals
+    intervals = group_intervals(chars)
+    
     # uFH0: serialized_ufont (packed, 11 bytes)
     header = struct.pack("<IBHHH",
-        1,           # interval_count
-        0,           # compressed = false
+        len(intervals),  # interval_count
+        0,               # compressed = false
         advance_y,
         ascender,
         descender,
     )
 
-    # uFI0: one interval covering all CHARS
-    interval = struct.pack("<III", min(CHARS), max(CHARS), 0)  # offset=0
+    # uFI0: multiple intervals (start, end, offset) for each contiguous range
+    interval_data = bytearray()
+    for start, end, offset in intervals:
+        interval_data.extend(struct.pack("<III", start, end, offset))
 
     h_chunk  = make_chunk(b"uFH0", header)
     p_chunk  = make_chunk(b"uFP0", bytes(glyph_structs))
-    i_chunk  = make_chunk(b"uFI0", interval)
+    i_chunk  = make_chunk(b"uFI0", bytes(interval_data))
     b_chunk  = make_chunk(b"uFB0", bytes(bitmap_data))
 
     body = h_chunk + p_chunk + i_chunk + b_chunk
@@ -164,11 +223,13 @@ def convert(font_path, pixel_size, output_path):
     with open(output_path, "wb") as f:
         f.write(iff)
 
-    print(f"  {len(CHARS)} glyphs, {len(bitmap_data)} bitmap bytes → {len(iff)} bytes → {output_path}")
+    print(f"  {len(chars_sorted)} glyphs ({len(intervals)} intervals), {len(bitmap_data)} bitmap bytes → {len(iff)} bytes → {output_path}")
 
 
 if __name__ == "__main__":
-    if len(sys.argv) != 4:
-        print(f"Usage: {sys.argv[0]} <font_path> <size_px> <output.uff>")
+    if len(sys.argv) not in (4, 5):
+        print(f"Usage: {sys.argv[0]} <font_path> <size_px> <output.uff> [numeric]")
+        print("  numeric  — restrict charset to digits/symbols for large hero text")
         sys.exit(1)
-    convert(sys.argv[1], int(sys.argv[2]), sys.argv[3])
+    charset = CHARS_NUMERIC if len(sys.argv) == 5 and sys.argv[4] == "numeric" else CHARS_FULL
+    convert(sys.argv[1], int(sys.argv[2]), sys.argv[3], chars=charset)

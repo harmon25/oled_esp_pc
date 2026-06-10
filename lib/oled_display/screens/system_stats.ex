@@ -1,6 +1,6 @@
 defmodule OledDisplay.Screens.SystemStats do
   @moduledoc """
-  System statistics screen (spleen5x8 font, 8px line height).
+  System statistics screen (:small font, 12px line height).
 
   y=0  [wifi][up_arrow]            0d 00:00   16px icons, uptime right-aligned
   y=18 128k free  45k min                     free + min heap
@@ -16,9 +16,9 @@ defmodule OledDisplay.Screens.SystemStats do
   @bg 0x000000
   @fg 0xFFFFFF
 
-  @font :spleen5x8
-  # Spleen 5×8 → advance_x=5px per char
-  @char_w 5
+  @font :small
+  # Spleen 6×12 → advance_x=6px per char
+  @char_w 6
 
   @tick_ms 60_000
 

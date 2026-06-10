@@ -65,70 +65,110 @@ mix atomvm.esp32.flash --port /dev/ttyACM0 --baud 460800
 ## View Serial Output
 
 ```bash
-# Requires a TTY (run in a real terminal):s
+# Requires a TTY (run in a real terminal):
 idf.py -p /dev/ttyACM0 monitor
 
-# Or using minicom:
-minicom -D /dev/ttyACM0 -b 115200
+# Or using picocom:
+picocom /dev/ttyACM0 -b 115200
 ```
 
-## Layout Cycling (Demo Mode)
+## Screens
 
-The app cycles through 3 layouts with local-only demo data:
+The app boots with a splash screen, then auto-rotates through available screens every 10 seconds. A short button press immediately cycles to the next screen.
 
-| Data | Range | Cycle |
-|------|-------|-------|
-| Weather icon | sun, cloud_sun, cloud, rain1, rain2, rain_lightning, lightning, snow, wind, moon | every 3 s |
-| Temperature | 18–42°C | every 5 s |
-| Humidity | 40–95% | every 5 s |
-| Layout | Dashboard / Weather Focus / Compact Stack | every 8 s |
+| Screen | Description |
+|--------|-------------|
+| **Splash** | Boot phase: app name, WiFi status, weather fetch progress |
+| **System Stats** | WiFi/IP, uptime, free heap, process count |
+| **Weather** | Live wttr.in data; cycles locations every 5 s; skipped when offline |
 
-All three layouts show icon+text pairs using 16×16 pixel icons.
+## Font System
+
+Custom fonts are stored as `.uff` binaries in `assets/fonts/` and auto-registered at compile time.
+
+| Atom | File | Source | Size | Best for |
+|------|------|--------|------|----------|
+| `:small` | `spleen_6x12.uff` | Spleen (BSD-2-Clause) | 6×12 | Dense body text, 21 chars/line |
+| `:medium` | `spleen_8x16.uff` | Spleen (BSD-2-Clause) | 8×16 | Labels, status lines, 16 chars/line |
+| `:large` | `spleen_12x24.uff` | Spleen (BSD-2-Clause) | 12×24 | Headlines, large numbers, 10 chars/line |
+
+All three fonts cover ASCII (U+0020–007E) plus the degree sign (U+00B0). Regenerate with:
+
+```bash
+python3 tools/gen_font.py /path/to/spleen-6x12.bdf  0 assets/fonts/spleen_6x12.uff
+python3 tools/gen_font.py /path/to/spleen-8x16.bdf  0 assets/fonts/spleen_8x16.uff
+python3 tools/gen_font.py /path/to/spleen-12x24.bdf 0 assets/fonts/spleen_12x24.uff numeric
+```
+
+BDF sources: https://github.com/fcambus/spleen
 
 ## Project Structure
 
 ```
 oled_display/
-├── .gitignore
 ├── README.md
-├── mix.exs                         # Mix project (ExAtomVM config)
-├── lib/
-│   ├── oled_display.ex             # App entrypoint (exports start/0)
-│   └── oled_display/
-│       ├── application_supervisor.ex  # OTP supervisor tree
-│       ├── display.ex              # GenServer: drives AtomGL, tick timer, layout dispatch
-│       ├── icon_data.ex            # Compile-time RGBA8888 icon bitmaps (14 icons)
-│       ├── layouts.ex              # 3 layout variants (A/B/C) as display lists
-│       └── wifi.ex                 # WiFi GenServer (WiFiWiz)
+├── AGENTS.md                           # Agent / developer instructions
+├── mix.exs                             # Mix project (ExAtomVM config)
+├── config/config.exs                   # WiFi credentials, weather locations/units
+├── assets/
+│   ├── fonts/                          # .uff font binaries (compile-time embedded)
+│   └── icons/                          # .rgba icon binaries (compile-time embedded)
+├── tools/
+│   ├── gen_font.py                     # BDF/TTF → .uff converter
+│   ├── gen_icons.py                    # XBM → .rgba converter
+│   └── geocode.sh                      # Look up lat/lon for weather locations
+└── lib/
+    ├── oled_display.ex                 # App entrypoint (exports start/0)
+    └── oled_display/
+        ├── application_supervisor.ex   # OTP supervision tree
+        ├── display.ex                  # GenServer: AtomGL port, tick, screen routing
+        ├── display_state.ex            # ETS-backed shared state
+        ├── fonts.ex                    # Compile-time font registry
+        ├── icon_data.ex                # Compile-time RGBA8888 icon bitmaps
+        ├── icons.ex                    # Inline text symbols (degree sign, etc.)
+        ├── layouts.ex                  # Legacy layout helpers (retained for reuse)
+        ├── wifi.ex                     # WiFi GenServer
+        ├── weather.ex                  # Weather fetch GenServer (wttr.in)
+        ├── weather/client.ex           # Raw gen_tcp HTTP/1.1 client
+        └── screens/
+            ├── splash.ex               # Boot splash renderer (not a Screen)
+            ├── system_stats.ex         # System stats screen
+            └── weather.ex              # Live weather screen
 ```
 
 ## Adding a New Icon
 
-Weather icons are generated from embedded XBM source in `priv/gen_icons.py`:
-
-1. Add the 16×16 XBM byte array to `XBM_DATA` in `priv/gen_icons.py`
-2. Run `python3 priv/gen_icons.py` — writes `priv/icons/weather_<name>.rgba` and a preview PNG to `icon_previews/`
-3. Add `@<name> File.read!(Path.join(@icons_dir, "weather_<name>.rgba"))` in `icon_data.ex`
+1. Add the 16×16 XBM byte array to `XBM_DATA` in `tools/gen_icons.py`
+2. Run `python3 tools/gen_icons.py` — writes `assets/icons/<name>.rgba`
+3. Add `@<name> File.read!(Path.join(@icons_dir, "<name>.rgba"))` in `icon_data.ex`
 4. Add a `get(:<name>)` clause returning `{:rgba8888, 16, 16, @<name>}`
-5. Use `{:image, x, y, 0x000000, IconData.get(:<name>)}` in layouts (black bg for hollow outlines)
+5. For hollow outline icons: `{:image, x, y, 0x000000, IconData.get(:<name>)}` (black bg)
+6. For solid utility icons: `{:image, x, y, :transparent, IconData.get(:<name>)}`
 
-Utility icons (solid, not hollow): place a pre-built `.rgba` file in `priv/icons/utility_<name>.rgba`, follow steps 3–4 above, and use `:transparent` as the background colour in the display list.
+## Adding a Weather Location
+
+```bash
+# Look up lat/lon
+tools/geocode.sh "City Name"
+```
+
+Then add to `config/config.exs`:
+
+```elixir
+config :oled_display, :weather,
+  locations: [
+    %{name: "Toronto", lat: 43.6532, lon: -79.3832}
+  ]
+```
 
 ## Iterating
 
 1. Edit files in `lib/oled_display/`
-2. `mix atomvm.esp32.flash --port /dev/ttyACM0`
-3. The board resets automatically after flashing and runs the new app
+2. `mix atomvm.packbeam && mix atomvm.esp32.flash --port /dev/ttyACM0`
+3. The board resets automatically after flashing
 
-## Dependencies
-
-All runtime dependencies are provided by the boot AVM partition pre-flashed on the device:
-- `I2C` — I2C bus driver
-- `AVMPort` — Erlang port driver wrapper
-- `Integer` — `Integer.to_string/1`
-- `atomgl` display port driver (built into the firmware)
-
-## Icon Credits
+## Credits
 
 - Weather icons from [Dhole/weather-pixel-icons](https://github.com/Dhole/weather-pixel-icons) — CC BY-SA 4.0
-- Utility icons (WiFi, temp, humidity, clock) from [osar/arduino-oled-icons](https://github.com/osar/arduino-oled-icons) — GPL v3 (original work by Artur Funk)
+- Utility icons from [osar/arduino-oled-icons](https://github.com/osar/arduino-oled-icons) — GPL v3 (Artur Funk)
+- Spleen fonts by Frederic Cambus — BSD 2-Clause

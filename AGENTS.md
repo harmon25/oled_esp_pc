@@ -72,25 +72,54 @@ Custom fonts are stored as `.uff` binaries in `assets/fonts/` and auto-registere
 
 **Registered fonts:**
 
-| Atom | File | Source | Size | Best for |
-|---|---|---|---|---|
-| `:spleen5x8` | `spleen_5x8.uff` | Spleen (BSD-2) | 5×8 | Dense rows, up to 16×8 chars |
-| `:cozette` | `cozette_6x13.uff` | Cozette (MIT) | 6×13 | Body text, 21×4 chars |
-| `:pixop16` | `pixel_operator_16.uff` | Pixel Operator (CC0) | 8×16 | Headlines / large numbers |
+| Atom | File | Source | Size | Glyphs | Best for |
+|---|---|---|---|---|---|
+| `:small` | `spleen_6x12.uff` | Spleen (BSD-2-Clause) | 6×12 | 96 | Dense body text, 21 chars/line |
+| `:medium` | `spleen_8x16.uff` | Spleen (BSD-2-Clause) | 8×16 | 96 | Labels, status lines, 16 chars/line |
+| `:large` | `spleen_12x24.uff` | Spleen (BSD-2-Clause) | 12×24 | 16 | Hero values (temperature, humidity) |
 
-All three are rendered with **hinted monochrome bitmaps** (`FT_LOAD_TARGET_MONO`) so thin strokes (e.g. `m`, `w`) stay crisp on a 1-bit OLED. No anti-aliased grayscale path is used.
+All fonts are rendered from BDF sources with **hinted monochrome bitmaps** (`FT_LOAD_TARGET_MONO`) so thin strokes stay crisp on a 1-bit OLED.
+
+**Glyph coverage:**
+- `:small` and `:medium`: ASCII (U+0020–007E, 95 glyphs) + degree sign (U+00B0) = 96 glyphs
+- `:large`: numeric-only subset — space, `%`, `-`, `0–9`, `C`, `F`, `°` = 16 glyphs
+
+**Why `:large` is numeric-only:** The 12×24 full-ASCII font is ~15.6 KB; the ESP32-C3 heap is too constrained to hold three full fonts alongside WiFi and AtomGL. `:large` is only ever used to display temperature (`"22°C"`) and humidity (`"65%"`), so a 16-glyph subset (~2.7 KB) covers all real uses. If you need `:large` for arbitrary text, regenerate without the `numeric` flag (see below).
+
+**Font-based symbols:**
+Use `OledDisplay.Icons` for the degree symbol:
+
+```elixir
+alias OledDisplay.Icons
+
+# Temperature formatting
+{:text, x, y, :large, 0xFFFFFF, 0x000000, "22" <> Icons.get(:degree) <> "C"}
+```
+
+The degree sign (U+00B0) is included in all three registered fonts.
 
 **Auto-registration:**
 `lib/oled_display/fonts.ex` scans `assets/fonts/*.uff` at compile time and returns a `[{atom, binary}, ...]` list from `OledDisplay.Fonts.all/0`. `display.ex` loops over this list and calls `{:register_font, atom, binary}` for each entry. Each `.uff` is declared as `@external_resource` so Mix recompiles when fonts change.
 
-**Generating a new font:** `tools/gen_font.py` converts TTF/OTF/BDF/PCF to the ufontlib IFF (`.uff`) format using freetype-py. Targets printable ASCII (0x20–0x7E), uncompressed, 4bpp nibble layout.
+**Generating fonts:** `tools/gen_font.py` converts TTF/OTF/BDF/PCF to the ufontlib IFF (`.uff`) format using freetype-py. Supports multiple disjoint Unicode ranges, uncompressed, 4bpp nibble layout.
 
 ```bash
-python3 tools/gen_font.py <font_path> <size_px> assets/fonts/<name>.uff
+# Full ASCII + degree (for :small and :medium)
+python3 tools/gen_font.py <bdf_path> 0 assets/fonts/spleen_6x12.uff
+python3 tools/gen_font.py <bdf_path> 0 assets/fonts/spleen_8x16.uff
+
+# Numeric-only (for :large — temperature and humidity values only)
+python3 tools/gen_font.py <bdf_path> 0 assets/fonts/spleen_12x24.uff numeric
 ```
 
-- For BDF/PCF bitmap fonts the `size_px` argument is ignored (the strike is fixed).
-- For TTF/OTF, the script uses `FT_LOAD_RENDER | FT_LOAD_MONOCHROME | FT_LOAD_TARGET_MONO` to emit crisp 1-bit glyphs. Sizes below ~12 px with the old anti-aliased path lost thin strokes; the mono path fixes this.
+BDF sources: https://github.com/fcambus/spleen (`spleen-6x12.bdf`, `spleen-8x16.bdf`, `spleen-12x24.bdf`)
+
+The output filename determines the atom alias (see `fonts.ex` `@aliases`): `spleen_6x12.uff` → `:small`, `spleen_8x16.uff` → `:medium`, `spleen_12x24.uff` → `:large`.
+
+- For BDF/PCF bitmap fonts the `size_px` argument is ignored (the strike is fixed) — pass `0`.
+- For TTF/OTF, the script uses `FT_LOAD_RENDER | FT_LOAD_MONOCHROME | FT_LOAD_TARGET_MONO` to emit crisp 1-bit glyphs.
+- The optional `numeric` fourth argument restricts to `CHARS_NUMERIC` (16 glyphs) instead of `CHARS_FULL` (96 glyphs).
+- The script groups codepoints into contiguous intervals automatically and writes multiple `EpdUnicodeInterval` entries to the `.uff` file.
 
 **Note:** `tools/` scripts are host-only. Never put them in `priv/` — that directory is bundled into the `.avm`.
 

@@ -11,10 +11,13 @@ defmodule OledDisplay.Screens.Weather do
 
   alias OledDisplay.DisplayState
   alias OledDisplay.IconData
+  alias OledDisplay.Icons
 
   @bg 0x000000
   @fg 0xFFFFFF
-  @deg <<0xF8>>
+  # U+00B0 — included in all Spleen font variants.
+  # Do NOT use <<0xF8>> here; that is the CP437 degree byte for :default16px only.
+  @deg Icons.get(:degree)
 
   # How long each location stays on screen before cycling to the next
   @cycle_ms 5_000
@@ -48,7 +51,7 @@ defmodule OledDisplay.Screens.Weather do
   # (e.g. a manual :screen_request bypassed available?/1).
   def render(%{locations: []} = _state) do
     [
-      {:text, 14, 28, :spleen5x8, @fg, :transparent, "No locations set"},
+      {:text, 14, 28, :small, @fg, :transparent, "No locations set"},
       {:rect, 0, 0, 128, 64, @bg}
     ]
   end
@@ -62,19 +65,19 @@ defmodule OledDisplay.Screens.Weather do
     [
       # Row 0: weather icon + condition label
       {:image, 2, 2, @bg, icon},
-      {:text, 22, 4, :spleen5x8, @fg, :transparent, label},
+      {:text, 22, 4, :medium, @fg, :transparent, label},
 
       # Row 1: location name
-      {:text, 22, 20, :spleen5x8, @fg, :transparent, current.name},
+      {:text, 22, 20, :medium, @fg, :transparent, current.name},
 
       # Row 2: temperature + humidity with utility icons
       {:image, 2, 38, :transparent, IconData.get(:temperature)},
-      {:text, 20, 40, :default16px, @fg, :transparent, temp_str},
+      {:text, 20, 40, :large, @fg, :transparent, temp_str},
       {:image, 68, 38, :transparent, IconData.get(:humidity)},
-      {:text, 86, 40, :default16px, @fg, :transparent, hum_str},
+      {:text, 86, 40, :large, @fg, :transparent, hum_str},
 
       # Row 3: location counter (bottom-right)
-      {:text, 96, 54, :spleen5x8, @fg, :transparent, counter},
+      {:text, 96, 54, :small, @fg, :transparent, counter},
 
       # Background
       {:rect, 0, 0, 128, 64, @bg}

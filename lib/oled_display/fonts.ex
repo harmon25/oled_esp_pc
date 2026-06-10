@@ -17,9 +17,9 @@ defmodule OledDisplay.Fonts do
 
   # Alias map: filename stem → short atom used in display lists
   @aliases %{
-    "spleen_5x8" => :spleen5x8
-    # "cozette_6x13" => :cozette
-    # "pixel_operator_16" => :pixop16
+    "spleen_6x12"  => :small,
+    "spleen_8x16"  => :medium,
+    "spleen_12x24" => :large
   }
 
   @fonts (for path <- Path.wildcard(Path.join(@fonts_dir, "*.uff")) do
@@ -37,9 +37,9 @@ defmodule OledDisplay.Fonts do
 
       iex> OledDisplay.Fonts.all()
       [
-        {:spleen5x8, <<...>>},
-        {:cozette, <<...>>},
-        {:pixop16, <<...>>}
+        {:small, <<...>>},
+        {:medium, <<...>>},
+        {:large, <<...>>}
       ]
   """
   def all, do: @fonts

@@ -30,19 +30,19 @@ defmodule OledDisplay.Screens.Splash do
   # ── Private ──────────────────────────────────────────────────────
 
   defp text_items(state) do
-    # Build a list of {y, text} rows for any non-nil status lines, then
-    # turn them into AtomGL text items. This keeps the layout flat and
-    # makes adding a new boot-status line a one-liner.
+    # {y, font, text} rows — nil text rows are dropped before rendering.
+    # Title uses :medium (8×16); status lines use :small (6×12) which safely
+    # fits long strings like "IP: 192.168.100.200" within 128px.
     rows =
       [
-        {12, "AtomVM | Elixir"},
-        {24, wifi_text(state)},
-        {34, weather_text(state)}
+        {10, :medium, "AtomVM | Elixir"},
+        {30, :small,  wifi_text(state)},
+        {44, :small,  weather_text(state)}
       ]
-      |> Enum.reject(fn {_y, text} -> is_nil(text) end)
+      |> Enum.reject(fn {_y, _font, text} -> is_nil(text) end)
 
-    Enum.map(rows, fn {y, text} ->
-      {:text, 4, y, :spleen5x8, @fg, :transparent, text}
+    Enum.map(rows, fn {y, font, text} ->
+      {:text, 4, y, font, @fg, :transparent, text}
     end)
   end
 
@@ -64,7 +64,7 @@ defmodule OledDisplay.Screens.Splash do
   defp weather_text(_), do: nil
 
   defp loading_bar(state) do
-    track = {:rect, 14, 56, 100, 3, @track}
+    track = {:rect, 14, 58, 100, 3, @track}
 
     max_w = 100
     total = state.boot_min_ticks
@@ -74,7 +74,7 @@ defmodule OledDisplay.Screens.Splash do
 
     fill =
       if fill_w > 0 do
-        [{:rect, 14, 56, fill_w, 3, @fg}]
+        [{:rect, 14, 58, fill_w, 3, @fg}]
       else
         []
       end
